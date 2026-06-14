@@ -14,6 +14,23 @@ async def test_fleet_core_init():
         assert len(core.sources) == 6
 
 @pytest.mark.asyncio
+async def test_fleet_core_models():
+    core = FleetCore()
+    with patch("httpx.AsyncClient.get") as mock_get:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {"sources": [{"provider": "ollama", "models": ["test-model"]}]}
+        mock_get.return_value = mock_resp
+        
+        models = await core.models()
+        assert len(models) == 1
+        assert models[0]["provider"] == "ollama"
+
+    with patch("httpx.AsyncClient.get") as mock_get:
+        mock_get.side_effect = Exception("network error")
+        models = await core.models()
+        assert len(models) == 0
+
+@pytest.mark.asyncio
 async def test_fleet_core_selfcheck():
     core = FleetCore()
     # Mock the sources list to have a fake source
@@ -43,6 +60,48 @@ async def test_fleet_core_show():
     assert state.services[0].name == "web"
     assert state.services[0].paused_by_fleet is True
     assert len(state.sources) == 1
+
+@pytest.mark.asyncio
+async def test_fleet_core_show_status_filter(sample_services):
+    from fleet.core import FleetCore
+    core = FleetCore()
+    
+    # Mock source to return specific services
+    mock_source = MagicMock()
+    mock_source.name = "test"
+    
+    s_healthy = sample_services[0]
+    s_healthy.status = "running"
+    s_healthy.diagnostics = {}
+    
+    s_unhealthy = sample_services[1]
+    s_unhealthy.status = "error"
+    s_unhealthy.diagnostics = {}
+    
+    s_questionable = sample_services[2]
+    s_questionable.status = "running"
+    s_questionable.diagnostics = {"questionable": True}
+    
+    mock_source.collect = AsyncMock(return_value=[s_healthy, s_unhealthy, s_questionable])
+    from fleet.models import SourceHealth
+    mock_source.healthy = AsyncMock(return_value=SourceHealth(name="test", reachable=True))
+    
+    core.sources = [mock_source]
+    
+    # Check healthy
+    state = await core.show(status_filter="healthy")
+    assert len(state.services) == 1
+    assert state.services[0].name == s_healthy.name
+    
+    # Check unhealthy
+    state = await core.show(status_filter="unhealthy")
+    assert len(state.services) == 2
+    assert state.services[0].name == s_unhealthy.name
+    
+    # Check questionable
+    state = await core.show(status_filter="questionable")
+    assert len(state.services) == 1
+    assert state.services[0].name == s_questionable.name
 
 @pytest.mark.asyncio
 async def test_fleet_core_pause_resume():

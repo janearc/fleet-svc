@@ -51,11 +51,14 @@ class KubeSource(Source):
             if spec.template and spec.template.spec and spec.template.spec.containers:
                 image = spec.template.spec.containers[0].image
 
+            deployment = meta.namespace or "default"
+
             records.append(
                 ServiceRecord(
                     name=meta.name,
                     source="kube",
                     status=status,
+                    deployment=deployment,
                     essential=labels.get("fleet.essential", "").lower() in ("true", "1", "yes"),
                     paused_by_fleet=annotations.get("fleet.paused", "").lower() in ("true", "1", "yes"),
                     image=image,

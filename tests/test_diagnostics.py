@@ -11,6 +11,27 @@ async def test_diagnose_service_no_metrics():
     assert res == {}
 
 @pytest.mark.asyncio
+async def test_evaluate_questionable():
+    from fleet.diagnostics import DiagnosticsCollector
+    from unittest.mock import MagicMock
+    
+    collector = DiagnosticsCollector(timeout=1.0)
+    
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_resp = MagicMock()
+        mock_resp.json.return_value = {
+            "message": {"content": "YES it looks bad"},
+            "eval_count": 10,
+            "prompt_eval_count": 50
+        }
+        mock_post.return_value = mock_resp
+        
+        res = await collector.evaluate_questionable("test_service", {"memory": 999})
+        assert res.get("questionable") is True
+        assert res.get("llm_tokens") == 60
+        assert "llm_time_ms" in res
+
+@pytest.mark.asyncio
 async def test_diagnose_service_with_metrics(respx_mock):
     respx_mock.get("http://127.0.0.1:9090/metrics").respond(text='''
 # HELP process_resident_memory_bytes

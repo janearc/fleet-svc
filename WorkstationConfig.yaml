@@ -1,0 +1,43 @@
+version: "1.0"
+host:
+  os: "darwin"
+  arch: "arm64"
+  daemons:
+    - "docker"
+    - "uv"
+    - "go"
+
+repositories:
+  - name: "fleet"
+    origin: "git@github.com:jane/fleet.git"
+    path: "~/work/fleet"
+    essential: true
+  - name: "traefik"
+    origin: "git@github.com:jane/traefik.git"
+    path: "~/work/traefik"
+    essential: true
+  - name: "delightd"
+    origin: "git@github.com:jane/delightd.git"
+    path: "~/work/delightd"
+    essential: true
+  - name: "transparent"
+    origin: "git@github.com:jane/transparent.git"
+    path: "~/work/transparent"
+    essential: true
+  - name: "odysseus"
+    origin: "git@github.com:jane/odysseus.git"
+    path: "~/work/odysseus"
+    essential: false
+  - name: "paling"
+    origin: "git@github.com:jane/paling.git"
+    path: "~/work/paling"
+    essential: false
+
+models:
+  - provider: "huggingface"
+    id: "bartowski/cognitivecomputations_Dolphin-Mistral-24B-Venice-Edition-GGUF"
+    file: "cognitivecomputations_Dolphin-Mistral-24B-Venice-Edition-Q6_K_L.gguf"
+  - provider: "ollama"
+    id: "llama3.1:latest"
+  - provider: "ollama"
+    id: "llama3.2:latest"

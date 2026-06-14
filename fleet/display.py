@@ -11,6 +11,7 @@ def render_fleet_state(state: FleetState, as_json: bool = False):
         return
 
     table = Table(title=f"Fleet State (Collected at {state.collected_at.isoformat()})")
+    table.add_column("Deployment", style="bold cyan")
     table.add_column("Service", style="bold")
     table.add_column("Source")
     table.add_column("Status")
@@ -19,36 +20,48 @@ def render_fleet_state(state: FleetState, as_json: bool = False):
     table.add_column("Image")
     table.add_column("Diag")
 
+    # Group by deployment
+    from collections import defaultdict
+    grouped = defaultdict(list)
     for svc in state.services:
-        status_color = "dim"
-        if svc.status == "running": status_color = "green"
-        elif svc.status == "stopped": status_color = "red"
-        elif svc.status == "paused": status_color = "yellow"
-        elif svc.status == "error": status_color = "bold red"
-        elif svc.status == "routed": status_color = "cyan"
+        dep = svc.deployment or "unknown"
+        grouped[dep].append(svc)
 
-        status_text = f"[{status_color}]{svc.status}[/{status_color}]"
-        essential_text = "[green]✓[/green]" if svc.essential else "[dim]—[/dim]"
-        
-        diag_text = "[dim]—[/dim]"
-        if svc.diagnostics:
-            issues = []
-            for k, v in svc.diagnostics.items():
-                if v: issues.append(k)
-            if issues:
-                diag_text = f"[yellow]⚠ {', '.join(issues)}[/yellow]"
-            else:
-                diag_text = "[green]✓[/green]"
-
-        table.add_row(
-            svc.name,
-            svc.source,
-            status_text,
-            essential_text,
-            svc.uptime or "[dim]—[/dim]",
-            svc.image or "[dim]—[/dim]",
-            diag_text
-        )
+    # Sort deployments alphabetically
+    for dep in sorted(grouped.keys()):
+        first_row = True
+        for svc in grouped[dep]:
+            status_color = "dim"
+            if svc.status == "running": status_color = "green"
+            elif svc.status == "stopped": status_color = "red"
+            elif svc.status == "paused": status_color = "yellow"
+            elif svc.status == "error": status_color = "bold red"
+            elif svc.status == "routed": status_color = "cyan"
+    
+            status_text = f"[{status_color}]{svc.status}[/{status_color}]"
+            essential_text = "[green]✓[/green]" if svc.essential else "[dim]—[/dim]"
+            
+            diag_text = "[dim]—[/dim]"
+            if svc.diagnostics:
+                issues = []
+                for k, v in svc.diagnostics.items():
+                    if v: issues.append(k)
+                if issues:
+                    diag_text = f"[yellow]⚠ {', '.join(issues)}[/yellow]"
+                else:
+                    diag_text = "[green]✓[/green]"
+    
+            table.add_row(
+                dep if first_row else "",
+                svc.name,
+                svc.source,
+                status_text,
+                essential_text,
+                svc.uptime or "[dim]—[/dim]",
+                svc.image or "[dim]—[/dim]",
+                diag_text
+            )
+            first_row = False
 
     console.print(table)
     
@@ -58,9 +71,31 @@ def render_fleet_state(state: FleetState, as_json: bool = False):
         if s.reachable:
             footer.append(f"{s.name} [green]✓[/green]")
         else:
-            footer.append(f"{s.name} [red]✗ ({s.error})[/red]")
+            footer.append(f"{s.name} [red]✗[/red] ({s.error})")
     
     console.print(f"Sources: {'  '.join(footer)}")
+
+    if not any(s.reachable for s in state.sources):
+        console.print("\n[bold red]🚨 CRITICAL: FLEET IS COMPLETELY DOWN (POST-METEOR STATE) 🚨[/bold red]")
+        console.print("[yellow]It is 3AM. The NOC woke you up. Here is exactly what to do to recover the fleet:[/yellow]")
+        console.print("\n[bold]1. Clone essential control-plane repositories:[/bold]")
+        console.print("   [dim]git clone https://github.com/your-org/traefik ~/work/traefik[/dim]")
+        console.print("   [dim]git clone https://github.com/your-org/delightd ~/work/delightd[/dim]")
+        console.print("   [dim]git clone https://github.com/your-org/transparent ~/work/transparent[/dim]")
+        console.print("\n[bold]2. Bootstrap the network mesh & observability:[/bold]")
+        console.print("   [dim]cd ~/work/traefik && docker compose up -d[/dim]")
+        console.print("   [dim]cd ~/work/delightd && go build ./cmd/delightd && ./delightd &[/dim]")
+        console.print("   [dim]cd ~/work/transparent && go build ./cmd/transparent && ./transparent &[/dim]")
+        console.print("\n[bold]3. Resume normal operations:[/bold]")
+        console.print("   [dim]The routing layer will automatically reconstruct via delightd.[/dim]")
+        console.print("   [dim]Run `fleet show` again once the control plane is online.[/dim]\n")
+
+    # LLM Telemetry
+    total_llm_time = sum(svc.diagnostics.get("llm_time_ms", 0) for svc in state.services if svc.diagnostics)
+    total_tokens = sum(svc.diagnostics.get("llm_tokens", 0) for svc in state.services if svc.diagnostics)
+    
+    if total_llm_time > 0 or total_tokens > 0:
+        console.print(f"[dim]LLM Analysis Time: {total_llm_time}ms | Tokens Burned: {total_tokens}[/dim]")
 
 
 def render_pause_result(result: PauseResult):

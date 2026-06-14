@@ -132,11 +132,24 @@ class DockerSource(Source):
             if name.startswith("/"):
                 name = name[1:]
 
+            # Compute deployment
+            deployment = labels.get("com.docker.compose.project")
+            
+            image_name = None
+            if hasattr(c, "image") and c.image and hasattr(c.image, "tags") and c.image.tags:
+                image_name = c.image.tags[0]
+            
+            if not deployment and image_name:
+                deployment = image_name.split(":")[0].split("/")[-1]
+            elif not deployment:
+                deployment = "docker-standalone"
+
             records.append(
                 ServiceRecord(
                     name=name,
                     source="docker",
                     status=status,
+                    deployment=deployment,
                     essential=labels.get(ESSENTIAL_LABEL, "").lower() in ("true", "1", "yes"),
                     paused_by_fleet=labels.get("fleet.paused", "").lower() in ("true", "1", "yes"),
                     prev_state=labels.get("fleet.prev-state"),
