@@ -67,3 +67,71 @@ def test_serve(mock_run, cli_runner):
     result = cli_runner.invoke(main, ["serve", "--port", "1234"])
     assert result.exit_code == 0
     mock_run.assert_called_once()
+
+@patch("fleet.cli.FleetCore")
+def test_models_ls(mock_core_cls, cli_runner):
+    mock_core = mock_core_cls.return_value
+    mock_core.models = AsyncMock(return_value=[
+        {"provider": "ollama", "url": "http://localhost:11434", "models": ["llama3", "mistral"], "healthy": True}
+    ])
+    result = cli_runner.invoke(main, ["models", "ls"])
+    assert result.exit_code == 0
+    assert "ollama" in result.output
+    assert "llama3" in result.output
+
+@patch("fleet.cli.FleetCore")
+def test_models_ls_empty(mock_core_cls, cli_runner):
+    mock_core = mock_core_cls.return_value
+    mock_core.models = AsyncMock(return_value=[])
+    result = cli_runner.invoke(main, ["models", "ls"])
+    assert result.exit_code == 0
+    assert "No local LLM sources discovered." in result.output
+
+@patch("builtins.open", new_callable=MagicMock)
+def test_apply_success(mock_open, cli_runner):
+    import yaml
+    mock_open.return_value.__enter__.return_value.read.return_value = """
+version: "1.0"
+host:
+  os: "darwin"
+  arch: "arm64"
+  daemons: ["docker"]
+repositories:
+  - name: "fleet"
+    origin: "git"
+    path: "/tmp/fleet"
+    essential: true
+models:
+  - provider: "ollama"
+    id: "llama3.1:latest"
+    """
+    result = cli_runner.invoke(main, ["apply", "dummy.yaml"])
+    assert result.exit_code == 0
+    assert "Applying WorkstationConfig v1.0" in result.output
+    assert "Verify daemon: docker" in result.output
+    assert "git clone git /tmp/fleet" in result.output
+
+@patch("httpx.AsyncClient.get")
+@patch("os.path.exists", return_value=True)
+@patch("builtins.open", new_callable=MagicMock)
+def test_sync_clean(mock_open, mock_exists, mock_get, cli_runner):
+    import json
+    mock_open.return_value.__enter__.return_value.read.return_value = json.dumps({
+        "Repos": [{"Name": "test-repo", "Dirty": False, "Unpushed": 0}]
+    })
+    result = cli_runner.invoke(main, ["sync"])
+    assert result.exit_code == 0
+    assert "Workstation is clean and safe to teardown" in result.output
+
+@patch("httpx.AsyncClient.get")
+@patch("os.path.exists", return_value=True)
+@patch("builtins.open", new_callable=MagicMock)
+def test_sync_dirty(mock_open, mock_exists, mock_get, cli_runner):
+    import json
+    mock_open.return_value.__enter__.return_value.read.return_value = json.dumps({
+        "Repos": [{"Name": "dirty-repo", "Dirty": True, "Unpushed": 2}]
+    })
+    result = cli_runner.invoke(main, ["sync"])
+    assert result.exit_code == 1
+    assert "BLOCKED" in result.output
+    assert "dirty-repo" in result.output

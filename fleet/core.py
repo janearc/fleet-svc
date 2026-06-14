@@ -57,6 +57,26 @@ class FleetCore:
         except Exception as e:
             log.warning("Could not init TransparentSource: %s", e)
 
+        # Load contrib sources dynamically
+        try:
+            import pkgutil
+            import importlib
+            import inspect
+            from fleet.sources.base import Source
+            import fleet.contrib
+            
+            for _, name, _ in pkgutil.iter_modules(fleet.contrib.__path__):
+                mod = importlib.import_module(f"fleet.contrib.{name}")
+                for obj_name, obj in inspect.getmembers(mod):
+                    if inspect.isclass(obj) and issubclass(obj, Source) and obj is not Source:
+                        try:
+                            self.sources.append(obj())
+                            log.info("Loaded contrib source: %s", obj_name)
+                        except Exception as e:
+                            log.warning("Could not init contrib source %s: %s", obj_name, e)
+        except Exception as e:
+            log.warning("Could not load contrib sources: %s", e)
+
     def _init_journal(self) -> None:
         db_path = self._config.get("journal_db_path")
         self._journal = PauseJournal(db_path=db_path)
@@ -66,7 +86,7 @@ class FleetCore:
         timeout = self._config.get("diagnostics_timeout", 5.0)
         self._diagnostics = DiagnosticsCollector(timeout=timeout)
 
-    async def show(self, source_filter: str | None = None) -> FleetState:
+    async def show(self, source_filter: str | None = None, status_filter: str | None = None) -> FleetState:
         sources_to_query = [s for s in self.sources if not source_filter or s.name == source_filter]
         
         by_source: dict[str, list[ServiceRecord]] = {}
@@ -98,12 +118,33 @@ class FleetCore:
             row["service_name"]
             for row in (self._journal.get_paused_services() if self._journal else [])
         }
+        
+        filtered_merged = []
         for svc in merged:
             if svc.name in paused_set:
                 svc.paused_by_fleet = True
+                
+            # Populate diagnostics if running
+            if svc.status == "running" and self._diagnostics:
+                check_quest = (status_filter == "questionable")
+                diags = await self._diagnostics.diagnose_service(svc, check_questionable=check_quest)
+                if diags:
+                    svc.diagnostics = diags
+
+            # Filter logic
+            keep = True
+            if status_filter == "healthy":
+                keep = (svc.status == "running" and not svc.diagnostics)
+            elif status_filter == "unhealthy":
+                keep = (svc.status != "running" or bool(svc.diagnostics))
+            elif status_filter == "questionable":
+                keep = (svc.diagnostics.get("questionable") is True)
+                
+            if keep:
+                filtered_merged.append(svc)
 
         return FleetState(
-            services=merged,
+            services=filtered_merged,
             sources=source_health,
             collected_at=datetime.now(timezone.utc),
         )
@@ -118,6 +159,20 @@ class FleetCore:
 
     async def resume(self, dry_run: bool = False) -> PauseResult:
         return await self._pause_manager.execute_resume(dry_run=dry_run)
+
+    async def models(self) -> list[dict[str, Any]]:
+        """Fetch discovered LLM models directly from delightd."""
+        import httpx
+        try:
+            # Note: delightd architecture uses port 8088 for control plane telemetry
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get("http://localhost:8088/discovery/llms")
+                resp.raise_for_status()
+                data = resp.json()
+                return data.get("sources", [])
+        except Exception as e:
+            log.warning("Could not fetch models from delightd: %s", e)
+            return []
 
     async def selfcheck(self) -> list[SourceHealth]:
         healths: list[SourceHealth] = []

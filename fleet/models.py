@@ -6,14 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-SourceName = Literal[
-    "delightd",
-    "docker",
-    "kube",
-    "traefik",
-    "envoy",
-    "transparent",
-]
+SourceName = str
 
 ServiceStatus = Literal[
     "running",
@@ -40,6 +33,7 @@ class ServiceRecord(BaseModel):
     prev_replicas: int | None = None
     prev_state: str | None = None
     namespace: str | None = None
+    deployment: str | None = None
     # populated by prometheus scraper
     diagnostics: dict = Field(default_factory=dict)
     # arbitrary source-specific data
@@ -68,4 +62,28 @@ class PauseResult(BaseModel):
     dry_run: bool
     affected: list[ServiceRecord]
     skipped: list[ServiceRecord]
-    errors: list[dict] = Field(default_factory=list)
+    errors: list[dict]
+
+class WorkstationHost(BaseModel):
+    os: str
+    arch: str
+    daemons: list[str]
+    packages: list[str] = Field(default_factory=list)
+    casks: list[str] = Field(default_factory=list)
+
+class WorkstationRepo(BaseModel):
+    name: str
+    origin: str
+    path: str
+    essential: bool = False
+
+class WorkstationModel(BaseModel):
+    provider: str
+    id: str
+    file: str | None = None
+
+class WorkstationConfig(BaseModel):
+    version: str
+    host: WorkstationHost
+    repositories: list[WorkstationRepo]
+    models: list[WorkstationModel] = Field(default_factory=list)

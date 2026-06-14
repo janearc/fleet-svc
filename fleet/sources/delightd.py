@@ -26,20 +26,42 @@ class DelightdSource(Source):
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8080",
+        base_url: str | None = None,
         project_names: list[str] | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
+        self._base_url = base_url
         self._project_names = project_names or []
         self._timeout = timeout
+
+    async def _resolve_host(self) -> tuple[str, str | None]:
+        if self._base_url:
+            return self._base_url.rstrip("/"), None
+        try:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
+                resp = await client.get("http://127.0.0.1:8080/api/http/routers")
+                if resp.status_code == 200:
+                    routers = resp.json()
+                    for r in routers:
+                        if r.get("name", "").startswith("delightd"):
+                            rule = r.get("rule", "")
+                            m = re.search(r"Host\(`([^`]+)`\)", rule)
+                            if m:
+                                hostname = m.group(1)
+                                return "http://127.0.0.1:80", hostname
+        except Exception as e:
+            log.debug(f"Failed to resolve delightd hostname from Traefik: {e}")
+        return "http://127.0.0.1:8088", None
 
     async def collect(self) -> list[ServiceRecord]:
         records: list[ServiceRecord] = []
         try:
+            url, host_header = await self._resolve_host()
+            headers = {"Host": host_header} if host_header else {}
             async with httpx.AsyncClient(
-                base_url=self._base_url,
+                base_url=url,
                 timeout=self._timeout,
+                headers=headers,
             ) as client:
                 # validate connectivity first
                 health_resp = await client.get("/health")
@@ -52,7 +74,7 @@ class DelightdSource(Source):
         except httpx.HTTPError as exc:
             log.warning(
                 "delightd collect failed",
-                extra={"url": self._base_url, "error": str(exc)},
+                extra={"url": getattr(self, "_base_url", "unknown"), "error": str(exc)},
             )
         return records
 
@@ -90,9 +112,12 @@ class DelightdSource(Source):
     async def healthy(self) -> SourceHealth:
         t0 = time.monotonic()
         try:
+            url, host_header = await self._resolve_host()
+            headers = {"Host": host_header} if host_header else {}
             async with httpx.AsyncClient(
-                base_url=self._base_url,
+                base_url=url,
                 timeout=self._timeout,
+                headers=headers,
             ) as client:
                 resp = await client.get("/health")
                 resp.raise_for_status()

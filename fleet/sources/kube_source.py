@@ -13,6 +13,17 @@ class KubeSource(Source):
     name = "kube"
 
     def __init__(self, apps_v1: Any = None, core_v1: Any = None, namespace: str = "default"):
+        if apps_v1 is None or core_v1 is None:
+            try:
+                from kubernetes import client, config
+                config.load_kube_config()
+                apps_v1 = apps_v1 or client.AppsV1Api()
+                core_v1 = core_v1 or client.CoreV1Api()
+            except ImportError:
+                log.warning("kubernetes python package is not installed")
+            except Exception as e:
+                log.warning(f"failed to load kube config: {e}")
+                
         self._apps_v1 = apps_v1
         self._core_v1 = core_v1
         self._namespace = namespace
@@ -51,11 +62,14 @@ class KubeSource(Source):
             if spec.template and spec.template.spec and spec.template.spec.containers:
                 image = spec.template.spec.containers[0].image
 
+            deployment = meta.namespace or "default"
+
             records.append(
                 ServiceRecord(
                     name=meta.name,
                     source="kube",
                     status=status,
+                    deployment=deployment,
                     essential=labels.get("fleet.essential", "").lower() in ("true", "1", "yes"),
                     paused_by_fleet=annotations.get("fleet.paused", "").lower() in ("true", "1", "yes"),
                     image=image,

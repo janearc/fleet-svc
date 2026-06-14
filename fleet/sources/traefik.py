@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class TraefikSource(Source):
     name = "traefik"
 
-    def __init__(self, url: str = "http://localhost:8081", timeout: float = 5.0):
+    def __init__(self, url: str = "http://localhost:8080", timeout: float = 5.0):
         self.url = url.rstrip("/")
         self.timeout = timeout
 
