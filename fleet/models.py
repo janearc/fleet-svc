@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Literal
+
+from pydantic import BaseModel, Field
+
+
+SourceName = Literal[
+    "delightd",
+    "docker",
+    "kube",
+    "traefik",
+    "envoy",
+    "transparent",
+]
+
+ServiceStatus = Literal[
+    "running",
+    "stopped",
+    "paused",
+    "error",
+    "routed",
+    "unknown",
+]
+
+
+class ServiceRecord(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: str
+    source: SourceName
+    status: ServiceStatus
+    essential: bool = False
+    paused_by_fleet: bool = False
+    image: str | None = None
+    ports: list[str] = Field(default_factory=list)
+    uptime: str | None = None
+    replicas: int | None = None
+    prev_replicas: int | None = None
+    prev_state: str | None = None
+    namespace: str | None = None
+    # populated by prometheus scraper
+    diagnostics: dict = Field(default_factory=dict)
+    # arbitrary source-specific data
+    metadata: dict = Field(default_factory=dict)
+
+
+class SourceHealth(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    name: str
+    reachable: bool
+    latency_ms: float | None = None
+    error: str | None = None
+
+
+class FleetState(BaseModel):
+    services: list[ServiceRecord]
+    sources: list[SourceHealth]
+    collected_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc)
+    )
+
+
+class PauseResult(BaseModel):
+    action: Literal["pause", "resume"]
+    dry_run: bool
+    affected: list[ServiceRecord]
+    skipped: list[ServiceRecord]
+    errors: list[dict] = Field(default_factory=list)
