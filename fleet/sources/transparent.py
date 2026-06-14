@@ -1,4 +1,5 @@
 import logging
+import re
 import httpx
 from datetime import datetime
 from fleet.sources.base import Source
@@ -9,25 +10,40 @@ logger = logging.getLogger(__name__)
 class TransparentSource(Source):
     name = "transparent"
 
-    def __init__(self, url: str = "http://localhost:8081", timeout: float = 5.0):
-        self.url = url.rstrip("/")
+    def __init__(self, url: str | None = None, timeout: float = 5.0):
+        self._url = url
         self.timeout = timeout
+        self._host_header = None
+
+    async def _resolve_host(self) -> tuple[str, str | None]:
+        if self._url:
+            return self._url, None
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.get("http://127.0.0.1:8080/api/http/routers")
+                if resp.status_code == 200:
+                    routers = resp.json()
+                    for r in routers:
+                        if r.get("name", "").startswith("transparent"):
+                            rule = r.get("rule", "")
+                            m = re.search(r"Host\(`([^`]+)`\)", rule)
+                            if m:
+                                hostname = m.group(1)
+                                return "http://127.0.0.1:80", hostname
+        except Exception as e:
+            logger.debug(f"Failed to resolve transparent hostname from Traefik: {e}")
+        return "http://127.0.0.1:8080", None # Fallback
 
     async def collect(self) -> list[ServiceRecord]:
         services = []
         try:
+            url, host_header = await self._resolve_host()
+            headers = {"Host": host_header} if host_header else {}
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                # Try getting the dashboard or any data endpoint
-                # Since we know transparent serves prometheus-style metrics and potentially data.json
-                # For now we'll query /metrics and extract some data or try a mock /data.json
-                # Fallback to GET /dashboard and parse lines
-                resp = await client.get(f"{self.url}/metrics")
+                resp = await client.get(f"{url}/metrics", headers=headers)
                 resp.raise_for_status()
                 text = resp.text
                 
-                # Basic parsing to extract some known services if possible
-                # If transparent exposes structured data, this should be updated to use that endpoint
-                # Assuming /metrics might have some series with 'project' or 'service' labels
                 project_names = set()
                 for line in text.splitlines():
                     if line.startswith("#"):
@@ -46,14 +62,16 @@ class TransparentSource(Source):
                         metadata={"info": "discovered via transparent metrics"}
                     ))
         except Exception as e:
-            logger.warning("Transparent collection failed", extra={"error": str(e), "url": self.url})
+            logger.warning("Transparent collection failed", extra={"error": str(e), "url": getattr(self, "url", "unknown")})
         return services
 
     async def healthy(self) -> SourceHealth:
         try:
             start_time = datetime.now()
+            url, host_header = await self._resolve_host()
+            headers = {"Host": host_header} if host_header else {}
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(f"{self.url}/metrics")
+                resp = await client.get(f"{url}/metrics", headers=headers)
                 resp.raise_for_status()
             latency_ms = (datetime.now() - start_time).total_seconds() * 1000
             return SourceHealth(name=self.name, reachable=True, latency_ms=latency_ms)

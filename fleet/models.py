@@ -6,14 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-SourceName = Literal[
-    "delightd",
-    "docker",
-    "kube",
-    "traefik",
-    "envoy",
-    "transparent",
-]
+SourceName = str
 
 ServiceStatus = Literal[
     "running",
@@ -75,6 +68,8 @@ class WorkstationHost(BaseModel):
     os: str
     arch: str
     daemons: list[str]
+    packages: list[str] = Field(default_factory=list)
+    casks: list[str] = Field(default_factory=list)
 
 class WorkstationRepo(BaseModel):
     name: str

@@ -6,6 +6,17 @@ host:
     - "docker"
     - "uv"
     - "go"
+  packages:
+    - "jq"
+    - "htop"
+    - "wget"
+  casks:
+    - "brave-browser"
+    - "signal"
+    - "pycharm"
+    - "webstorm"
+    - "goland"
+    - "iterm2"
 
 repositories:
   - name: "fleet"

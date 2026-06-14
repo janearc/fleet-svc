@@ -57,6 +57,26 @@ class FleetCore:
         except Exception as e:
             log.warning("Could not init TransparentSource: %s", e)
 
+        # Load contrib sources dynamically
+        try:
+            import pkgutil
+            import importlib
+            import inspect
+            from fleet.sources.base import Source
+            import fleet.contrib
+            
+            for _, name, _ in pkgutil.iter_modules(fleet.contrib.__path__):
+                mod = importlib.import_module(f"fleet.contrib.{name}")
+                for obj_name, obj in inspect.getmembers(mod):
+                    if inspect.isclass(obj) and issubclass(obj, Source) and obj is not Source:
+                        try:
+                            self.sources.append(obj())
+                            log.info("Loaded contrib source: %s", obj_name)
+                        except Exception as e:
+                            log.warning("Could not init contrib source %s: %s", obj_name, e)
+        except Exception as e:
+            log.warning("Could not load contrib sources: %s", e)
+
     def _init_journal(self) -> None:
         db_path = self._config.get("journal_db_path")
         self._journal = PauseJournal(db_path=db_path)
