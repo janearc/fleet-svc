@@ -1,3 +1,7 @@
+import os
+import shutil
+import subprocess
+
 import click
 import asyncio
 from fleet.core import FleetCore
@@ -242,29 +246,100 @@ def _essential_compose_repos(config_path=None):
     return repos
 
 
-def _start_docker_runtime(dry_run):
-    # Prefer colima over Docker Desktop. On a memory-constrained host Docker
-    # Desktop's idle footprint is the liability we are retiring; colima runs the
-    # engine headless in a Lima VM whose resource ceiling is pinned in its own
-    # config. Either way we only kick the engine and ask the operator to re-run
-    # once it reports ready -- bootstrap does not block on VM boot.
-    import os
-    import shutil
-    import subprocess
+# Runtime override env var. Highest precedence -- lets a one-off invocation pin
+# the engine without editing WorkstationConfig (CI, a borrowed host, debugging).
+_DOCKER_RUNTIME_ENV = "FLEET_DOCKER_RUNTIME"
 
-    if shutil.which("colima"):
-        runtime, cmd = "colima", ["colima", "start"]
-    elif os.path.exists("/Applications/Docker.app"):
-        runtime, cmd = "Docker Desktop", ["open", "-a", "Docker"]
+# What fleet knows how to drive. `is_available` is evaluated at call time so the
+# env can be patched in tests; `start_cmd` only kicks the engine (we never block
+# on VM boot -- the operator re-runs bootstrap once it reports ready).
+_DOCKER_RUNTIMES = {
+    "colima": {
+        "label": "colima",
+        "is_available": lambda: shutil.which("colima") is not None,
+        "start_cmd": ["colima", "start"],
+    },
+    "docker-desktop": {
+        "label": "Docker Desktop",
+        "is_available": lambda: os.path.exists("/Applications/Docker.app"),
+        "start_cmd": ["open", "-a", "Docker"],
+    },
+}
+
+# Order in which "auto" sniffs. colima first: on a memory-constrained host Docker
+# Desktop's idle footprint is the liability we are retiring.
+_AUTO_PREFERENCE = ("colima", "docker-desktop")
+
+# "auto" is a resolver directive, not a drivable runtime, so it is valid input
+# but absent from _DOCKER_RUNTIMES.
+_VALID_RUNTIMES = frozenset({"auto"}) | frozenset(_DOCKER_RUNTIMES)
+
+
+def _resolve_docker_runtime(config_path=None):
+    # Precedence: $FLEET_DOCKER_RUNTIME > WorkstationConfig host.docker_runtime >
+    # "auto". The config read is best-effort -- a meteor may have taken the file
+    # with everything else, and cold-boot recovery must still pick a runtime.
+    # Returns one of _VALID_RUNTIMES; "auto" is expanded later by sniffing.
+    env_choice = os.environ.get(_DOCKER_RUNTIME_ENV)
+    if env_choice:
+        env_choice = env_choice.strip().lower()
+        if env_choice not in _VALID_RUNTIMES:
+            raise ValueError(
+                f"{_DOCKER_RUNTIME_ENV}={env_choice!r} is not a known runtime "
+                f"(choose from {sorted(_VALID_RUNTIMES)})"
+            )
+        return env_choice
+
+    import yaml
+
+    from fleet.models import WorkstationConfig
+
+    try:
+        config_path = config_path or _locate_workstation_config()
+        with open(config_path) as handle:
+            config = WorkstationConfig(**yaml.safe_load(handle))
+        return config.host.docker_runtime
+    except Exception:
+        return "auto"
+
+
+def _start_docker_runtime(dry_run, runtime=None):
+    # Resolve the runtime, then enforce the contract: an *explicit* choice that is
+    # not installed is a hard stop -- we refuse to silently start a different
+    # engine (the exact failure that left a Docker Desktop daemon shadowing the
+    # colima fleet). Only "auto" is allowed to fall back, and only by sniffing.
+    if runtime is None:
+        try:
+            runtime = _resolve_docker_runtime()
+        except ValueError as exc:
+            click.echo(click.style(f" ✗ {exc}", fg="red"))
+            return
+
+    if runtime == "auto":
+        resolved = next((k for k in _AUTO_PREFERENCE if _DOCKER_RUNTIMES[k]["is_available"]()), None)
+        if resolved is None:
+            click.echo(click.style(" ✗ No Docker runtime found (neither colima nor Docker Desktop).", fg="red"))
+            return
     else:
-        click.echo(click.style(" ✗ No Docker runtime found (neither colima nor /Applications/Docker.app).", fg="red"))
-        return
+        resolved = runtime
+        if not _DOCKER_RUNTIMES[resolved]["is_available"]():
+            label = _DOCKER_RUNTIMES[resolved]["label"]
+            click.echo(click.style(
+                f" ✗ Configured docker runtime '{resolved}' ({label}) is not installed on this host.",
+                fg="red"))
+            click.echo(click.style(
+                f"   Refusing to start a different engine. Install {label}, or set host.docker_runtime "
+                f"(or ${_DOCKER_RUNTIME_ENV}) to 'auto' to allow sniffing.", fg="red"))
+            return
+
+    spec = _DOCKER_RUNTIMES[resolved]
+    label, cmd = spec["label"], spec["start_cmd"]
 
     if dry_run:
-        click.echo(click.style(f" ✗ Docker is NOT running. Would start it via {runtime}: {' '.join(cmd)}", fg="yellow"))
+        click.echo(click.style(f" ✗ Docker is NOT running. Would start it via {label}: {' '.join(cmd)}", fg="yellow"))
         return
 
-    click.echo(click.style(f" ✗ Docker is NOT running. Starting the engine via {runtime}...", fg="yellow"))
+    click.echo(click.style(f" ✗ Docker is NOT running. Starting the engine via {label}...", fg="yellow"))
     subprocess.run(cmd, check=False)
     click.echo(click.style("   Wait for the engine to report ready, then re-run `fleet bootstrap`.", fg="yellow"))
 

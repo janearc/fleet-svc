@@ -64,10 +64,22 @@ class PauseResult(BaseModel):
     skipped: list[ServiceRecord]
     errors: list[dict]
 
+# Which container engine fleet should drive on this workstation.
+#   auto           - prefer colima, fall back to Docker Desktop (legacy sniff)
+#   colima         - require colima; never silently start anything else
+#   docker-desktop - require Docker Desktop; never silently start colima
+# "auto" preserves prior behaviour. The explicit values are a contract: if the
+# named runtime is absent, bootstrap fails loudly rather than starting a runtime
+# the operator did not ask for (e.g. silently launching Docker Desktop on a host
+# whose owner has deliberately retired it).
+DockerRuntime = Literal["auto", "colima", "docker-desktop"]
+
+
 class WorkstationHost(BaseModel):
     os: str
     arch: str
     daemons: list[str]
+    docker_runtime: DockerRuntime = "auto"
     packages: list[str] = Field(default_factory=list)
     casks: list[str] = Field(default_factory=list)
 

@@ -2,6 +2,12 @@ version: "1.0"
 host:
   os: "darwin"
   arch: "arm64"
+  # Which container engine fleet drives on this host. This workstation has
+  # retired Docker Desktop in favour of colima; pinning it means a cold-boot
+  # bootstrap will never silently launch Docker Desktop (which would shadow the
+  # colima fleet with duplicate containers). Set to "docker-desktop" on a host
+  # that prefers it, or "auto" to sniff (colima first, Docker Desktop fallback).
+  docker_runtime: "colima"
   daemons:
     - "docker"
     - "uv"
