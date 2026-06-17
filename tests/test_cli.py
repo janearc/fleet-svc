@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock, AsyncMock, mock_open
 from click.testing import CliRunner
 from fleet.cli import main
 from fleet.models import FleetState, PauseResult
@@ -87,10 +87,13 @@ def test_models_ls_empty(mock_core_cls, cli_runner):
     assert result.exit_code == 0
     assert "No local LLM sources discovered." in result.output
 
-@patch("builtins.open", new_callable=MagicMock)
-def test_apply_success(mock_open, cli_runner):
-    import yaml
-    mock_open.return_value.__enter__.return_value.read.return_value = """
+def test_apply_success(cli_runner):
+    # Use mock_open: its read() returns the data once and then "" (EOF). A
+    # hand-rolled MagicMock whose read() returns the same chunk forever sends
+    # yaml.safe_load's Reader into an unbounded read loop -- CPU spin plus
+    # unbounded buffer growth. That is the OOM hazard tracked in the
+    # apply-config-oom issue, so this test must not reintroduce the pattern.
+    config_yaml = """
 version: "1.0"
 host:
   os: "darwin"
@@ -104,9 +107,10 @@ repositories:
 models:
   - provider: "ollama"
     id: "llama3.1:latest"
-    """
-    result = cli_runner.invoke(main, ["apply", "dummy.yaml"])
-    assert result.exit_code == 0
+"""
+    with patch("builtins.open", mock_open(read_data=config_yaml)):
+        result = cli_runner.invoke(main, ["apply", "dummy.yaml"])
+    assert result.exit_code == 0, f"Failed with output: {result.output}"
     assert "Applying WorkstationConfig v1.0" in result.output
     assert "Verify daemon: docker" in result.output
     assert "git clone git /tmp/fleet" in result.output
