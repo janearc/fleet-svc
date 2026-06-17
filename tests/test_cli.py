@@ -1,7 +1,13 @@
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock, mock_open
 from click.testing import CliRunner
-from fleet.cli import main, _essential_compose_repos
+from fleet.cli import (
+    main,
+    _essential_compose_repos,
+    _resolve_docker_runtime,
+    _start_docker_runtime,
+    _DOCKER_RUNTIME_ENV,
+)
 from fleet.models import FleetState, PauseResult, SourceHealth
 
 @pytest.fixture
@@ -188,3 +194,122 @@ def test_bootstrap_prefers_colima_when_docker_down(mock_core_cls, mock_which, mo
     assert "colima" in result.output.lower()
     # empty tier-0 must fall back rather than silently starting nothing
     assert "fallback" in result.output.lower()
+
+
+# --- docker runtime selection --------------------------------------------
+
+def _write_config(tmp_path, docker_runtime=None):
+    runtime_line = f'  docker_runtime: "{docker_runtime}"\n' if docker_runtime else ""
+    cfg = tmp_path / "WorkstationConfig.yaml"
+    cfg.write_text(
+        'version: "1.0"\n'
+        "host:\n"
+        "  os: darwin\n"
+        "  arch: arm64\n"
+        f"{runtime_line}"
+        "  daemons: [docker]\n"
+        "repositories:\n"
+        f'  - {{name: fleet, origin: git, path: "{tmp_path}/fleet", essential: true}}\n'
+    )
+    return str(cfg)
+
+
+def test_resolve_runtime_env_overrides_config(tmp_path, monkeypatch):
+    # env wins even when the config pins something else
+    monkeypatch.setenv(_DOCKER_RUNTIME_ENV, "docker-desktop")
+    cfg = _write_config(tmp_path, docker_runtime="colima")
+    assert _resolve_docker_runtime(cfg) == "docker-desktop"
+
+
+def test_resolve_runtime_env_is_case_insensitive(monkeypatch):
+    monkeypatch.setenv(_DOCKER_RUNTIME_ENV, "  Colima  ")
+    assert _resolve_docker_runtime("does-not-exist.yaml") == "colima"
+
+
+def test_resolve_runtime_env_invalid_raises(monkeypatch):
+    monkeypatch.setenv(_DOCKER_RUNTIME_ENV, "podman")
+    with pytest.raises(ValueError, match="not a known runtime"):
+        _resolve_docker_runtime("does-not-exist.yaml")
+
+
+def test_resolve_runtime_reads_config(tmp_path, monkeypatch):
+    monkeypatch.delenv(_DOCKER_RUNTIME_ENV, raising=False)
+    cfg = _write_config(tmp_path, docker_runtime="docker-desktop")
+    assert _resolve_docker_runtime(cfg) == "docker-desktop"
+
+
+def test_resolve_runtime_defaults_auto_when_field_absent(tmp_path, monkeypatch):
+    monkeypatch.delenv(_DOCKER_RUNTIME_ENV, raising=False)
+    cfg = _write_config(tmp_path, docker_runtime=None)
+    assert _resolve_docker_runtime(cfg) == "auto"
+
+
+def test_resolve_runtime_defaults_auto_when_config_missing(monkeypatch):
+    # a meteor took the config; cold boot must still resolve a runtime
+    monkeypatch.delenv(_DOCKER_RUNTIME_ENV, raising=False)
+    assert _resolve_docker_runtime("/nonexistent/WorkstationConfig.yaml") == "auto"
+
+
+@patch("fleet.cli.subprocess.run")
+@patch("os.path.exists", return_value=False)
+def test_start_runtime_explicit_unavailable_refuses(mock_exists, mock_run, capsys):
+    # docker-desktop is pinned but not installed -> hard stop, never start colima
+    _start_docker_runtime(dry_run=False, runtime="docker-desktop")
+    out = capsys.readouterr().out
+    assert "not installed" in out
+    assert "Refusing" in out
+    mock_run.assert_not_called()
+
+
+@patch("fleet.cli.subprocess.run")
+@patch("shutil.which", return_value="/opt/homebrew/bin/colima")
+def test_start_runtime_explicit_starts_when_available(mock_which, mock_run, capsys):
+    _start_docker_runtime(dry_run=False, runtime="colima")
+    out = capsys.readouterr().out
+    assert "colima" in out.lower()
+    mock_run.assert_called_once()
+    assert mock_run.call_args.args[0] == ["colima", "start"]
+
+
+@patch("fleet.cli.subprocess.run")
+@patch("shutil.which", return_value="/opt/homebrew/bin/colima")
+def test_start_runtime_auto_prefers_colima(mock_which, mock_run, capsys):
+    _start_docker_runtime(dry_run=False, runtime="auto")
+    out = capsys.readouterr().out
+    assert "colima" in out.lower()
+    assert mock_run.call_args.args[0] == ["colima", "start"]
+
+
+@patch("fleet.cli.subprocess.run")
+@patch("os.path.exists", return_value=True)
+@patch("shutil.which", return_value=None)
+def test_start_runtime_auto_falls_back_to_desktop(mock_which, mock_exists, mock_run, capsys):
+    # colima absent, Docker Desktop present -> auto picks Desktop
+    _start_docker_runtime(dry_run=False, runtime="auto")
+    out = capsys.readouterr().out
+    assert "Docker Desktop" in out
+    assert mock_run.call_args.args[0] == ["open", "-a", "Docker"]
+
+
+@patch("fleet.cli.subprocess.run")
+@patch("fleet.cli.sys.platform", "linux")
+@patch("os.path.exists", return_value=False)
+@patch("shutil.which", return_value=None)
+def test_start_runtime_non_darwin_hints_native_daemon(mock_which, mock_exists, mock_run, capsys):
+    # on a non-macOS host there is nothing to start (the runtimes are mac-shaped),
+    # but it must degrade with a useful hint, not crash and not run `open`
+    _start_docker_runtime(dry_run=False, runtime="auto")
+    out = capsys.readouterr().out
+    assert "No Docker runtime found" in out
+    assert "systemctl start docker" in out
+    mock_run.assert_not_called()
+
+
+@patch("fleet.cli.subprocess.run")
+def test_start_runtime_invalid_env_reports_and_skips(mock_run, capsys, monkeypatch):
+    # bad env propagates as a reported error, not a crash, and starts nothing
+    monkeypatch.setenv(_DOCKER_RUNTIME_ENV, "podman")
+    _start_docker_runtime(dry_run=False)
+    out = capsys.readouterr().out
+    assert "not a known runtime" in out
+    mock_run.assert_not_called()
