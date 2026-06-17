@@ -196,12 +196,83 @@ async def sync():
     except Exception as e:
         click.echo(click.style(f"Error checking sync state: {e}", fg="red"))
 
+_COMPOSE_FILENAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
+
+# Used only when WorkstationConfig cannot be read: a meteor may have taken the
+# config with everything else, and cold-boot recovery must not hard-depend on it.
+_FALLBACK_TIER0 = (
+    ("traefik", "~/work/traefik"),
+    ("delightd", "~/work/delightd"),
+    ("transparent", "~/work/transparent"),
+)
+
+
+def _locate_workstation_config():
+    import os
+    for candidate in ("WorkstationConfig.yaml", os.path.expanduser("~/work/fleet/WorkstationConfig.yaml")):
+        if os.path.exists(candidate):
+            return candidate
+    return "WorkstationConfig.yaml"
+
+
+def _essential_compose_repos(config_path=None):
+    # Tier-0 is every repository marked essential in WorkstationConfig that
+    # actually ships a compose file. Deriving the set from the declarative config
+    # (instead of a hardcoded list) is what lets kafka-logging -- the message
+    # backbone -- come up on a cold boot. fleet itself is essential but has no
+    # compose target, so the compose-file filter correctly excludes the
+    # orchestrator that is running this very command.
+    import os
+
+    import yaml
+
+    from fleet.models import WorkstationConfig
+
+    config_path = config_path or _locate_workstation_config()
+    with open(config_path) as handle:
+        config = WorkstationConfig(**yaml.safe_load(handle))
+
+    repos = []
+    for repo in config.repositories:
+        if not repo.essential:
+            continue
+        expanded = os.path.expanduser(repo.path)
+        if any(os.path.exists(os.path.join(expanded, name)) for name in _COMPOSE_FILENAMES):
+            repos.append((repo.name, repo.path))
+    return repos
+
+
+def _start_docker_runtime(dry_run):
+    # Prefer colima over Docker Desktop. On a memory-constrained host Docker
+    # Desktop's idle footprint is the liability we are retiring; colima runs the
+    # engine headless in a Lima VM whose resource ceiling is pinned in its own
+    # config. Either way we only kick the engine and ask the operator to re-run
+    # once it reports ready -- bootstrap does not block on VM boot.
+    import os
+    import shutil
+    import subprocess
+
+    if shutil.which("colima"):
+        runtime, cmd = "colima", ["colima", "start"]
+    elif os.path.exists("/Applications/Docker.app"):
+        runtime, cmd = "Docker Desktop", ["open", "-a", "Docker"]
+    else:
+        click.echo(click.style(" ✗ No Docker runtime found (neither colima nor /Applications/Docker.app).", fg="red"))
+        return
+
+    if dry_run:
+        click.echo(click.style(f" ✗ Docker is NOT running. Would start it via {runtime}: {' '.join(cmd)}", fg="yellow"))
+        return
+
+    click.echo(click.style(f" ✗ Docker is NOT running. Starting the engine via {runtime}...", fg="yellow"))
+    subprocess.run(cmd, check=False)
+    click.echo(click.style("   Wait for the engine to report ready, then re-run `fleet bootstrap`.", fg="yellow"))
+
+
 @main.command()
 @click.option('--dry-run', is_flag=True, help='Preview what will be started without taking action')
-@click.option('--force', is_flag=True, help='Force rebuild of binaries even if they exist')
-@click.option('--dirty', is_flag=True, help='Allow building from dirty repositories')
 @coro
-async def bootstrap(dry_run, force, dirty):
+async def bootstrap(dry_run):
     """Ignite the fleet from a cold boot: check daemons and start tier-0 services."""
     import subprocess
     import os
@@ -223,13 +294,7 @@ async def bootstrap(dry_run, force, dirty):
     if docker_running:
         click.echo(click.style(" ✓ Docker is running.", fg="green"))
     else:
-        if dry_run:
-            click.echo(click.style(" ✗ Docker is NOT running. Would attempt to start Docker via 'open -a Docker'.", fg="yellow"))
-        else:
-            click.echo(click.style(" ✗ Docker is NOT running. Attempting to start Docker...", fg="yellow"))
-            if os.path.exists("/Applications/Docker.app"):
-                subprocess.run(["open", "-a", "Docker"], check=False)
-                click.echo(click.style("   Please wait for Docker to fully start before proceeding.", fg="yellow"))
+        _start_docker_runtime(dry_run)
         
     if kube_running:
         click.echo(click.style(" ✓ Kubernetes is running.", fg="green"))
@@ -243,13 +308,6 @@ async def bootstrap(dry_run, force, dirty):
         click.echo(click.style("\nℹ️ Docker is required. In a real run, fleet would wait for Docker here.", fg="cyan"))
 
     click.echo("\n[Phase 2: Bootstrapping Tier 0 Services]")
-    
-    def is_repo_dirty(cwd):
-        try:
-            status = subprocess.check_output(["git", "status", "--porcelain"], cwd=cwd, text=True, stderr=subprocess.DEVNULL)
-            return bool(status.strip())
-        except Exception:
-            return False
 
     def run_docker_service(cwd, name):
         expanded_cwd = os.path.expanduser(cwd)
@@ -271,60 +329,22 @@ async def bootstrap(dry_run, force, dirty):
             click.echo(click.style(f"   ✗ Failed to start {name}: {e}", fg="red"))
             return False
 
-    def run_go_service(cwd, name):
-        expanded_cwd = os.path.expanduser(cwd)
-        binary_path = os.path.join(expanded_cwd, name)
-        
-        needs_build = not os.path.exists(binary_path)
-        if force:
-            needs_build = True
+    try:
+        tier0 = _essential_compose_repos()
+        if not tier0:
+            raise ValueError("no essential compose repositories resolved from WorkstationConfig")
+    except Exception as exc:
+        click.echo(click.style(f" ! Could not derive tier-0 from WorkstationConfig ({exc}); using fallback list.", fg="yellow"))
+        tier0 = list(_FALLBACK_TIER0)
 
-        repo_dirty = False
-        if os.path.exists(expanded_cwd):
-            repo_dirty = is_repo_dirty(expanded_cwd)
+    for name, path in tier0:
+        run_docker_service(path, name)
 
-        if needs_build:
-            if repo_dirty and not dirty:
-                click.echo(click.style(f" + Cannot start {name} in {cwd}...", fg="red"))
-                click.echo(click.style(f"   ✗ Repository is dirty and requires a build. Pass --dirty to build anyway.", fg="red"))
-                return False
-            cmd = f"go build ./cmd/{name} && ./{name} &"
-            action_desc = "Would build and start" if dry_run else "Building and starting"
-        else:
-            cmd = f"./{name} &"
-            action_desc = "Would run existing binary for" if dry_run else "Running existing binary for"
-            if repo_dirty:
-                click.echo(click.style(f"   ℹ️ {name} repo is dirty, but running existing binary.", fg="yellow"))
-
-        if dry_run:
-            click.echo(f" + [DRY RUN] {action_desc} {name}")
-            click.echo(f"   > cd {cwd} && {cmd}")
-            return True
-
-        click.echo(f" + {action_desc} {name} in {cwd}...")
-        if not os.path.exists(expanded_cwd):
-            click.echo(click.style(f"   ✗ Directory not found: {expanded_cwd}", fg="red"))
-            return False
-        try:
-            actual_cmd = cmd.replace("&", "").strip()
-            subprocess.Popen(actual_cmd, cwd=expanded_cwd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            click.echo(click.style(f"   ✓ {name} initiated.", fg="green"))
-            return True
-        except Exception as e:
-            click.echo(click.style(f"   ✗ Failed to start {name}: {e}", fg="red"))
-            return False
-
-    run_docker_service("~/work/traefik", "traefik")
-    run_docker_service("~/work/delightd", "delightd")
-    run_docker_service("~/work/transparent", "transparent")
-    
-    click.echo("\n" + "-"*60)
-    click.echo(click.style("💡 To get the fleet running, you have the following options:", bold=True, fg="cyan"))
-    click.echo(" • " + click.style("Default:", bold=True) + " Dirty repos run their existing binaries as-is (safest).")
-    click.echo(" • " + click.style("--force:", bold=True) + " Blows away existing binaries (BUT NOT SOURCE CODE) and attempts to arouse the fleet.")
-    click.echo(" • " + click.style("--dirty:", bold=True) + " Bypasses the safety check, allowing a rebuild from uncommitted dirty source code.")
+    click.echo("\n" + "-" * 60)
+    click.echo(click.style("💡 Tier-0 is derived from essential repositories in WorkstationConfig.", fg="cyan"))
+    click.echo("   Edit that file to change what a cold boot brings up.")
     click.echo("-" * 60)
-    
+
     if dry_run:
         click.echo(click.style("\n✅ Dry run complete. No actions were taken.", fg="green", bold=True))
         click.echo("Remove --dry-run to execute.")

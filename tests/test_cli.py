@@ -1,8 +1,8 @@
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock, mock_open
 from click.testing import CliRunner
-from fleet.cli import main
-from fleet.models import FleetState, PauseResult
+from fleet.cli import main, _essential_compose_repos
+from fleet.models import FleetState, PauseResult, SourceHealth
 
 @pytest.fixture
 def cli_runner():
@@ -139,3 +139,52 @@ def test_sync_dirty(mock_open, mock_exists, mock_get, cli_runner):
     assert result.exit_code == 1
     assert "BLOCKED" in result.output
     assert "dirty-repo" in result.output
+
+
+def test_essential_compose_repos_filters(tmp_path):
+    # essential + ships a compose file -> tier-0
+    (tmp_path / "kafka").mkdir()
+    (tmp_path / "kafka" / "docker-compose.yml").write_text("services: {}\n")
+    # essential but no compose (the orchestrator) -> excluded
+    (tmp_path / "fleet").mkdir()
+    cfg = tmp_path / "WorkstationConfig.yaml"
+    cfg.write_text(
+        'version: "1.0"\n'
+        "host: {os: darwin, arch: arm64, daemons: [docker]}\n"
+        "repositories:\n"
+        f'  - {{name: kafka-logging, origin: git, path: "{tmp_path}/kafka", essential: true}}\n'
+        f'  - {{name: fleet, origin: git, path: "{tmp_path}/fleet", essential: true}}\n'
+        f'  - {{name: comfyui, origin: git, path: "{tmp_path}/kafka", essential: false}}\n'
+    )
+    repos = _essential_compose_repos(str(cfg))
+    # only the essential repo that has a compose file survives
+    assert [name for name, _ in repos] == ["kafka-logging"]
+
+
+@patch("fleet.cli._essential_compose_repos")
+@patch("fleet.cli.FleetCore")
+def test_bootstrap_starts_config_derived_tier0(mock_core_cls, mock_repos, cli_runner):
+    # the message backbone must appear in a cold boot, not just the legacy trio
+    mock_repos.return_value = [("traefik", "~/work/traefik"), ("kafka-logging", "~/work/kafka-logging")]
+    mock_core = mock_core_cls.return_value
+    mock_core.selfcheck = AsyncMock(return_value=[
+        SourceHealth(name="docker", reachable=True),
+        SourceHealth(name="kube", reachable=False),
+    ])
+    result = cli_runner.invoke(main, ["bootstrap", "--dry-run"])
+    assert result.exit_code == 0, f"Failed with output: {result.output}"
+    assert "kafka-logging" in result.output
+    assert "traefik" in result.output
+
+
+@patch("fleet.cli._essential_compose_repos", return_value=[])
+@patch("shutil.which", return_value="/opt/homebrew/bin/colima")
+@patch("fleet.cli.FleetCore")
+def test_bootstrap_prefers_colima_when_docker_down(mock_core_cls, mock_which, mock_repos, cli_runner):
+    mock_core = mock_core_cls.return_value
+    mock_core.selfcheck = AsyncMock(return_value=[SourceHealth(name="docker", reachable=False)])
+    result = cli_runner.invoke(main, ["bootstrap", "--dry-run"])
+    assert result.exit_code == 0, f"Failed with output: {result.output}"
+    assert "colima" in result.output.lower()
+    # empty tier-0 must fall back rather than silently starting nothing
+    assert "fallback" in result.output.lower()
