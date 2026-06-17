@@ -292,6 +292,20 @@ def test_start_runtime_auto_falls_back_to_desktop(mock_which, mock_exists, mock_
 
 
 @patch("fleet.cli.subprocess.run")
+@patch("fleet.cli.sys.platform", "linux")
+@patch("os.path.exists", return_value=False)
+@patch("shutil.which", return_value=None)
+def test_start_runtime_non_darwin_hints_native_daemon(mock_which, mock_exists, mock_run, capsys):
+    # on a non-macOS host there is nothing to start (the runtimes are mac-shaped),
+    # but it must degrade with a useful hint, not crash and not run `open`
+    _start_docker_runtime(dry_run=False, runtime="auto")
+    out = capsys.readouterr().out
+    assert "No Docker runtime found" in out
+    assert "systemctl start docker" in out
+    mock_run.assert_not_called()
+
+
+@patch("fleet.cli.subprocess.run")
 def test_start_runtime_invalid_env_reports_and_skips(mock_run, capsys, monkeypatch):
     # bad env propagates as a reported error, not a crash, and starts nothing
     monkeypatch.setenv(_DOCKER_RUNTIME_ENV, "podman")

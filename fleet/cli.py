@@ -1,6 +1,7 @@
 import os
 import shutil
 import subprocess
+import sys
 
 import click
 import asyncio
@@ -316,9 +317,20 @@ def _start_docker_runtime(dry_run, runtime=None):
             return
 
     if runtime == "auto":
-        resolved = next((k for k in _AUTO_PREFERENCE if _DOCKER_RUNTIMES[k]["is_available"]()), None)
+        resolved = next(
+            (candidate for candidate in _AUTO_PREFERENCE if _DOCKER_RUNTIMES[candidate]["is_available"]()),
+            None,
+        )
         if resolved is None:
             click.echo(click.style(" ✗ No Docker runtime found (neither colima nor Docker Desktop).", fg="red"))
+            # The runtimes fleet can *start* are macOS-shaped (colima, Docker
+            # Desktop.app). On a non-darwin host this is not a crash -- there is
+            # simply nothing to launch; bring up the native daemon and re-run.
+            if sys.platform != "darwin":
+                click.echo(click.style(
+                    "   On this host fleet cannot start the engine for you; start your docker "
+                    "daemon directly (e.g. `systemctl start docker`) and re-run `fleet bootstrap`.",
+                    fg="yellow"))
             return
     else:
         resolved = runtime
