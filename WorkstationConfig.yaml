@@ -43,6 +43,10 @@ repositories:
     origin: "git@github.com:jane/paling.git"
     path: "~/work/paling"
     essential: false
+  - name: "kafka-logging"
+    origin: "git@github.com:janearc/kafka-svc.git"
+    path: "~/work/kafka-logging"
+    essential: true
 
 models:
   - provider: "huggingface"
