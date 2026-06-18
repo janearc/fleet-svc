@@ -10,7 +10,8 @@ It provides both a Python CLI and an HTTP service that aggregate state from:
 - **Kubernetes**
 - **Traefik**
 - **Envoy**
-- **Transparent**
+
+Git state (branch / dirty / unpushed) for managed repositories is sourced live from delightd's `GET /git` endpoint, with a local-git fallback when the daemon is unreachable so `fleet sync` can still gate a teardown.
 
 It uses a canonical essentiality model. By labelling services with `fleet.essential="true"`, you ensure `fleet pause` will gracefully bring down all other, non-essential workloads to conserve resources.
 

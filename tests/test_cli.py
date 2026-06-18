@@ -121,30 +121,38 @@ models:
     assert "Verify daemon: docker" in result.output
     assert "git clone git /tmp/fleet" in result.output
 
-@patch("httpx.AsyncClient.get")
-@patch("os.path.exists", return_value=True)
-@patch("builtins.open", new_callable=MagicMock)
-def test_sync_clean(mock_open, mock_exists, mock_get, cli_runner):
-    import json
-    mock_open.return_value.__enter__.return_value.read.return_value = json.dumps({
-        "Repos": [{"Name": "test-repo", "Dirty": False, "Unpushed": 0}]
-    })
+@patch("fleet.git_state.fetch_git_state")
+def test_sync_clean(mock_fetch, cli_runner):
+    mock_fetch.return_value = (
+        [{"name": "test-repo", "dirty": False, "unpushed": 0, "has_upstream": True, "error": ""}],
+        "delightd",
+    )
     result = cli_runner.invoke(main, ["sync"])
     assert result.exit_code == 0
     assert "Workstation is clean and safe to teardown" in result.output
 
-@patch("httpx.AsyncClient.get")
-@patch("os.path.exists", return_value=True)
-@patch("builtins.open", new_callable=MagicMock)
-def test_sync_dirty(mock_open, mock_exists, mock_get, cli_runner):
-    import json
-    mock_open.return_value.__enter__.return_value.read.return_value = json.dumps({
-        "Repos": [{"Name": "dirty-repo", "Dirty": True, "Unpushed": 2}]
-    })
+@patch("fleet.git_state.fetch_git_state")
+def test_sync_dirty(mock_fetch, cli_runner):
+    mock_fetch.return_value = (
+        [{"name": "dirty-repo", "dirty": True, "unpushed": 2, "has_upstream": True, "error": ""}],
+        "delightd",
+    )
     result = cli_runner.invoke(main, ["sync"])
     assert result.exit_code == 1
     assert "BLOCKED" in result.output
     assert "dirty-repo" in result.output
+
+@patch("fleet.git_state.fetch_git_state")
+def test_sync_unreadable_fails_closed(mock_fetch, cli_runner):
+    # A repo whose state could not be verified must block teardown, not pass.
+    mock_fetch.return_value = (
+        [{"name": "mystery-repo", "dirty": False, "unpushed": 0, "has_upstream": False, "error": "not a git repository"}],
+        "local",
+    )
+    result = cli_runner.invoke(main, ["sync"])
+    assert result.exit_code == 1
+    assert "BLOCKED" in result.output
+    assert "mystery-repo" in result.output
 
 
 def test_essential_compose_repos_filters(tmp_path):

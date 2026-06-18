@@ -42,7 +42,7 @@ def create_app(core: FleetCore, auth: SSHAuthenticator) -> FastAPI:
     @app.get("/metrics")
     async def metrics():
         # Expose some basic prometheus counters if needed
-        # Alternatively, rely on transparent to scrape /api/show and generate metrics
+        # Alternatively, rely on an external scraper hitting /api/show to generate metrics
         return JSONResponse(
             content="fleet_up 1\n",
             media_type="text/plain"
