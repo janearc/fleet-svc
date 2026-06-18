@@ -3,7 +3,7 @@ import subprocess
 from rich.console import Console
 from rich.table import Table
 
-from fleet.git_state import fetch_git_state, roster_name_paths
+from fleet.git_state import DelightdUnavailable, fetch_git_state, roster_name_paths
 
 
 @click.group(help="manage workstation git repositories")
@@ -25,10 +25,14 @@ def get_github_url(remote_url, branch):
 
 @git.command(help="show git status across all fleet repositories")
 def status():
-    repos, source = fetch_git_state(roster_name_paths())
+    try:
+        repos = fetch_git_state()
+    except DelightdUnavailable as exc:
+        click.echo(click.style(f"delightd unreachable, cannot show git state: {exc}", fg="red"))
+        return
 
     console = Console(width=200)
-    table = Table(title=f"Workstation Git State (via {source})")
+    table = Table(title="Workstation Git State")
     table.add_column("Repository", style="cyan")
     table.add_column("Branch", style="magenta")
     table.add_column("Dirty", justify="center")
@@ -60,9 +64,14 @@ def status():
 def push(push_all, repo):
     import os
 
-    roster = roster_name_paths()
-    paths = {name: path for name, path in roster}
-    repos, _ = fetch_git_state(roster)
+    try:
+        repos = fetch_git_state()
+    except DelightdUnavailable as exc:
+        click.echo(click.style(f"delightd unreachable, cannot determine what to push: {exc}", fg="red"))
+        return
+
+    # roster maps a project name to its path for the actual push action below
+    paths = {name: path for name, path in roster_name_paths()}
 
     repos_to_push = []
     for r in repos:

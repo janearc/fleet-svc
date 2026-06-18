@@ -163,10 +163,16 @@ async def apply(config_file, dry_run):
 def sync():
     import sys
 
-    from fleet.git_state import fetch_git_state, roster_name_paths
+    from fleet.git_state import DelightdUnavailable, fetch_git_state
 
-    git_repos, source = fetch_git_state(roster_name_paths())
-    click.echo(f"checking workstation git state via {source}...")
+    try:
+        git_repos = fetch_git_state()
+    except DelightdUnavailable as exc:
+        # fail closed: delightd is the source of truth; if it can't answer we
+        # cannot certify the workstation safe to tear down
+        click.echo(click.style(f"blocked: cannot verify git state, delightd unreachable ({exc})", fg="red"))
+        click.echo("start delightd and retry before a host migration or teardown.")
+        sys.exit(1)
 
     dirty = [r["name"] for r in git_repos if r.get("dirty")]
     unpushed = [r["name"] for r in git_repos if r.get("unpushed", 0) > 0]
