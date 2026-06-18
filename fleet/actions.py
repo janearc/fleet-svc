@@ -194,8 +194,8 @@ class PauseManager:
                     affected.append(svc)
 
                 else:
-                    # Non-lifecycle sources (traefik, envoy, delightd,
-                    # transparent) don't support pause — record intent only
+                    # Non-lifecycle sources (traefik, envoy, delightd)
+                    # don't support pause — record intent only
                     prev = {"status": svc.status, "source": svc.source}
                     self._journal.record_intent(
                         svc.name, svc.source, json.dumps(prev)

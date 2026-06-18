@@ -54,7 +54,7 @@ async def test_execute_pause_real(mock_journal):
     services = [
         ServiceRecord(name="docker-svc", source="docker", status="running", metadata={"docker_client": MagicMock()}),
         ServiceRecord(name="kube-svc", source="kube", status="running", metadata={"k8s_client": MagicMock()}),
-        ServiceRecord(name="other-svc", source="transparent", status="running")
+        ServiceRecord(name="other-svc", source="delightd", status="running")
     ]
     
     manager.pause_docker = AsyncMock()

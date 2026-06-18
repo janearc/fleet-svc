@@ -58,17 +58,6 @@ async def test_envoy_source(respx_mock):
     assert services[0].status == "error"
 
 @pytest.mark.asyncio
-async def test_transparent_source(respx_mock):
-    from fleet.sources.transparent import TransparentSource
-    respx_mock.get("http://localhost:8081/metrics").respond(text='foo_project="myapp"')
-    source = TransparentSource()
-    health = await source.healthy()
-    assert health.reachable is True
-    services = await source.collect()
-    assert len(services) == 1
-    assert services[0].name == "myapp"
-
-@pytest.mark.asyncio
 async def test_docker_source():
     from fleet.sources.docker_source import DockerSource
     mock_client = MagicMock()

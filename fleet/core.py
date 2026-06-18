@@ -11,7 +11,6 @@ from fleet.state import PauseJournal
 from fleet.sources import DockerSource, KubeSource, DelightdSource
 from fleet.sources.traefik import TraefikSource
 from fleet.sources.envoy import EnvoySource
-from fleet.sources.transparent import TransparentSource
 
 log = logging.getLogger(__name__)
 
@@ -51,11 +50,6 @@ class FleetCore:
             self.sources.append(EnvoySource())
         except Exception as e:
             log.warning("Could not init EnvoySource: %s", e)
-            
-        try:
-            self.sources.append(TransparentSource())
-        except Exception as e:
-            log.warning("Could not init TransparentSource: %s", e)
 
         # Load contrib sources dynamically
         try:

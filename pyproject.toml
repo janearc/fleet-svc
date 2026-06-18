@@ -1,7 +1,7 @@
 [project]
 name = "fleet"
 version = "0.1.0"
-description = "Local fleet management tool — aggregates service state from delightd, Docker, Kubernetes, Traefik, Envoy, and transparent"
+description = "Local fleet management tool — aggregates service state from delightd, Docker, Kubernetes, Traefik, and Envoy"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

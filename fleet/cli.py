@@ -160,46 +160,33 @@ async def apply(config_file, dry_run):
         click.echo(f" + cd {repo.path} && docker compose up -d")
 
 @main.command()
-@coro
-async def sync():
+def sync():
     """Ensure no repositories are dirty before teardown."""
-    import httpx
-    
-    click.echo("Checking workstation git state via transparent...")
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            # We fetch data.json from transparent, but transparent might not expose it directly via API
-            # For now, we simulate fetching it from disk since transparent writes it to ~/work/transparent/REPORT/data.json
-            import json, os
-            report_path = os.path.expanduser("~/work/transparent/REPORT/data.json")
-            if not os.path.exists(report_path):
-                click.echo(click.style("transparent report not found. Cannot verify dirty state safely.", fg="red"))
-                return
-                
-            with open(report_path, "r") as f:
-                data = json.load(f)
-                
-            dirty = []
-            unpushed = []
-            for repo in data.get("Repos", []):
-                if repo.get("Dirty"):
-                    dirty.append(repo["Name"])
-                if repo.get("Unpushed", 0) > 0:
-                    unpushed.append(repo["Name"])
-                    
-            if dirty or unpushed:
-                click.echo(click.style("\n🚨 BLOCKED: Workstation has uncommitted or unpushed state!", fg="red", bold=True))
-                if dirty:
-                    click.echo(f"Dirty repositories: {', '.join(dirty)}")
-                if unpushed:
-                    click.echo(f"Unpushed repositories: {', '.join(unpushed)}")
-                click.echo("\nPlease commit and push all changes before attempting a host migration or teardown.")
-                import sys; sys.exit(1)
-                
-            click.echo(click.style("✓ Workstation is clean and safe to teardown.", fg="green"))
-            
-    except Exception as e:
-        click.echo(click.style(f"Error checking sync state: {e}", fg="red"))
+    import sys
+
+    from fleet.git_state import fetch_git_state, roster_name_paths
+
+    git_repos, source = fetch_git_state(roster_name_paths())
+    click.echo(f"Checking workstation git state via {source}...")
+
+    dirty = [r["name"] for r in git_repos if r.get("dirty")]
+    unpushed = [r["name"] for r in git_repos if r.get("unpushed", 0) > 0]
+    # An unreadable repo is treated as unsafe: a teardown gate must fail closed,
+    # never assume "clean" for state it could not verify.
+    errored = [r["name"] for r in git_repos if r.get("error")]
+
+    if dirty or unpushed or errored:
+        click.echo(click.style("\n🚨 BLOCKED: Workstation has uncommitted, unpushed, or unverifiable state!", fg="red", bold=True))
+        if dirty:
+            click.echo(f"Dirty repositories: {', '.join(dirty)}")
+        if unpushed:
+            click.echo(f"Unpushed repositories: {', '.join(unpushed)}")
+        if errored:
+            click.echo(f"Could not verify (failing closed): {', '.join(errored)}")
+        click.echo("\nPlease commit and push all changes before attempting a host migration or teardown.")
+        sys.exit(1)
+
+    click.echo(click.style("✓ Workstation is clean and safe to teardown.", fg="green"))
 
 _COMPOSE_FILENAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 
@@ -208,7 +195,6 @@ _COMPOSE_FILENAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml"
 _FALLBACK_TIER0 = (
     ("traefik", "~/work/traefik"),
     ("delightd", "~/work/delightd"),
-    ("transparent", "~/work/transparent"),
 )
 
 
