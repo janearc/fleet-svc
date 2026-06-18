@@ -159,34 +159,33 @@ async def apply(config_file, dry_run):
     for repo in filter(lambda r: r.essential, config.repositories):
         click.echo(f" + cd {repo.path} && docker compose up -d")
 
-@main.command()
+@main.command(help="ensure no repositories are dirty before teardown")
 def sync():
-    """Ensure no repositories are dirty before teardown."""
     import sys
 
     from fleet.git_state import fetch_git_state, roster_name_paths
 
     git_repos, source = fetch_git_state(roster_name_paths())
-    click.echo(f"Checking workstation git state via {source}...")
+    click.echo(f"checking workstation git state via {source}...")
 
     dirty = [r["name"] for r in git_repos if r.get("dirty")]
     unpushed = [r["name"] for r in git_repos if r.get("unpushed", 0) > 0]
-    # An unreadable repo is treated as unsafe: a teardown gate must fail closed,
-    # never assume "clean" for state it could not verify.
+    # an unreadable repo is unsafe: the teardown gate fails closed, never
+    # assuming "clean" for state it could not verify
     errored = [r["name"] for r in git_repos if r.get("error")]
 
     if dirty or unpushed or errored:
-        click.echo(click.style("\n🚨 BLOCKED: Workstation has uncommitted, unpushed, or unverifiable state!", fg="red", bold=True))
+        click.echo(click.style("\nblocked: workstation has uncommitted, unpushed, or unverifiable state", fg="red"))
         if dirty:
-            click.echo(f"Dirty repositories: {', '.join(dirty)}")
+            click.echo(f"dirty: {', '.join(dirty)}")
         if unpushed:
-            click.echo(f"Unpushed repositories: {', '.join(unpushed)}")
+            click.echo(f"unpushed: {', '.join(unpushed)}")
         if errored:
-            click.echo(f"Could not verify (failing closed): {', '.join(errored)}")
-        click.echo("\nPlease commit and push all changes before attempting a host migration or teardown.")
+            click.echo(f"could not verify (failing closed): {', '.join(errored)}")
+        click.echo("\ncommit and push all changes before a host migration or teardown.")
         sys.exit(1)
 
-    click.echo(click.style("✓ Workstation is clean and safe to teardown.", fg="green"))
+    click.echo(click.style("workstation is clean and safe to teardown", fg="green"))
 
 _COMPOSE_FILENAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml")
 
