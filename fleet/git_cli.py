@@ -6,9 +6,8 @@ from rich.table import Table
 from fleet.git_state import fetch_git_state, roster_name_paths
 
 
-@click.group()
+@click.group(help="manage workstation git repositories")
 def git():
-    """Manage workstation git repositories."""
     pass
 
 
@@ -24,9 +23,8 @@ def get_github_url(remote_url, branch):
     return remote_url
 
 
-@git.command()
+@git.command(help="show git status across all fleet repositories")
 def status():
-    """Show git status across all fleet repositories."""
     repos, source = fetch_git_state(roster_name_paths())
 
     console = Console(width=200)
@@ -56,11 +54,10 @@ def status():
     console.print(table)
 
 
-@git.command()
+@git.command(help="commit and push dirty repositories")
 @click.option('--all', 'push_all', is_flag=True, help='Push all dirty/unpushed branches')
 @click.option('--repo', help='Push a specific repository')
 def push(push_all, repo):
-    """Commit and push dirty repositories."""
     import os
 
     roster = roster_name_paths()

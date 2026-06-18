@@ -129,7 +129,7 @@ def test_sync_clean(mock_fetch, cli_runner):
     )
     result = cli_runner.invoke(main, ["sync"])
     assert result.exit_code == 0
-    assert "Workstation is clean and safe to teardown" in result.output
+    assert "workstation is clean and safe to teardown" in result.output
 
 @patch("fleet.git_state.fetch_git_state")
 def test_sync_dirty(mock_fetch, cli_runner):
@@ -139,7 +139,7 @@ def test_sync_dirty(mock_fetch, cli_runner):
     )
     result = cli_runner.invoke(main, ["sync"])
     assert result.exit_code == 1
-    assert "BLOCKED" in result.output
+    assert "blocked" in result.output
     assert "dirty-repo" in result.output
 
 @patch("fleet.git_state.fetch_git_state")
@@ -151,7 +151,7 @@ def test_sync_unreadable_fails_closed(mock_fetch, cli_runner):
     )
     result = cli_runner.invoke(main, ["sync"])
     assert result.exit_code == 1
-    assert "BLOCKED" in result.output
+    assert "blocked" in result.output
     assert "mystery-repo" in result.output
 
 
