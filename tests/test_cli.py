@@ -123,20 +123,18 @@ models:
 
 @patch("fleet.git_state.fetch_git_state")
 def test_sync_clean(mock_fetch, cli_runner):
-    mock_fetch.return_value = (
-        [{"name": "test-repo", "dirty": False, "unpushed": 0, "has_upstream": True, "error": ""}],
-        "delightd",
-    )
+    mock_fetch.return_value = [
+        {"name": "test-repo", "dirty": False, "unpushed": 0, "has_upstream": True, "error": ""},
+    ]
     result = cli_runner.invoke(main, ["sync"])
     assert result.exit_code == 0
     assert "workstation is clean and safe to teardown" in result.output
 
 @patch("fleet.git_state.fetch_git_state")
 def test_sync_dirty(mock_fetch, cli_runner):
-    mock_fetch.return_value = (
-        [{"name": "dirty-repo", "dirty": True, "unpushed": 2, "has_upstream": True, "error": ""}],
-        "delightd",
-    )
+    mock_fetch.return_value = [
+        {"name": "dirty-repo", "dirty": True, "unpushed": 2, "has_upstream": True, "error": ""},
+    ]
     result = cli_runner.invoke(main, ["sync"])
     assert result.exit_code == 1
     assert "blocked" in result.output
@@ -144,15 +142,24 @@ def test_sync_dirty(mock_fetch, cli_runner):
 
 @patch("fleet.git_state.fetch_git_state")
 def test_sync_unreadable_fails_closed(mock_fetch, cli_runner):
-    # A repo whose state could not be verified must block teardown, not pass.
-    mock_fetch.return_value = (
-        [{"name": "mystery-repo", "dirty": False, "unpushed": 0, "has_upstream": False, "error": "not a git repository"}],
-        "local",
-    )
+    # a project whose state could not be verified must block teardown, not pass
+    mock_fetch.return_value = [
+        {"name": "mystery-repo", "dirty": False, "unpushed": 0, "has_upstream": False, "error": "not a git checkout"},
+    ]
     result = cli_runner.invoke(main, ["sync"])
     assert result.exit_code == 1
     assert "blocked" in result.output
     assert "mystery-repo" in result.output
+
+@patch("fleet.git_state.fetch_git_state")
+def test_sync_fails_closed_when_delightd_down(mock_fetch, cli_runner):
+    # no fleet-side fallback: if delightd can't answer, sync blocks rather than
+    # certifying the workstation clean on unverified state
+    from fleet.git_state import DelightdUnavailable
+    mock_fetch.side_effect = DelightdUnavailable("connection refused")
+    result = cli_runner.invoke(main, ["sync"])
+    assert result.exit_code == 1
+    assert "delightd unreachable" in result.output
 
 
 def test_essential_compose_repos_filters(tmp_path):
