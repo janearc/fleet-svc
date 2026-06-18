@@ -43,12 +43,19 @@ def fetch_git_state(
         with httpx.Client(timeout=timeout) as client:
             resp = client.get(f"{base_url.rstrip('/')}/git")
             resp.raise_for_status()
-            return resp.json().get("repos", []), "delightd"
+            # delightd returns git as an element of a project: {name, git:{...}}.
+            # Flatten it into fleet's internal flat shape so consumers (and the
+            # local fallback below) speak one vocabulary.
+            projects = [
+                {"name": p.get("name", ""), **(p.get("git") or {})}
+                for p in resp.json().get("projects", [])
+            ]
+            return projects, "delightd"
     except Exception:
-        return [_local_repo_state(name, path) for name, path in repos], "local"
+        return [_local_project_state(name, path) for name, path in repos], "local"
 
 
-def _local_repo_state(name: str, path: str) -> dict:
+def _local_project_state(name: str, path: str) -> dict:
     """Compute one repo's git state with the git CLI, mirroring delightd's
     pkg/gitstate semantics (including ``@{u}`` upstream resolution, so a remote
     named ``github`` rather than ``origin`` still resolves)."""
