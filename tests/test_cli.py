@@ -381,7 +381,11 @@ def test_pr_report_table(mock_build, mock_render, cli_runner):
 
 # --- lifecycle: emergency-stop, down, bootstrap ordering -----------------
 
-from fleet.cli import _FALLBACK_TIER0, _resolve_lifecycle_plan  # noqa: E402
+from fleet.cli import (  # noqa: E402
+    _FALLBACK_TIER0,
+    _locate_workstation_config,
+    _resolve_lifecycle_plan,
+)
 from fleet.lifecycle import (  # noqa: E402
     LifecyclePlan,
     LifecycleUnit,
@@ -541,3 +545,60 @@ def test_down_up_roundtrip(
 
     # round-trip is a mirror: up order is the reverse of down order
     assert started == list(reversed(stopped))
+
+
+def test_shipped_roster_classifies_obs_svc_as_teardown_workload(tmp_path):
+    # the live bug was a ROSTER gap, not a code gap: obs-svc has a running
+    # compose project (obs-svc-agg) but was absent from WorkstationConfig, so the
+    # lifecycle plan never saw it and `down` orphaned it. this guards the roster
+    # itself: feed the shipped WorkstationConfig (with obs-svc's path pointed at a
+    # dir that ships a dev-fleet-consuming compose file) through the real
+    # _resolve_lifecycle_plan and assert obs-svc is a non-essential workload in
+    # the teardown set. mocking the plan (as the other down tests do) cannot catch
+    # a roster omission -- only building from the declared roster can.
+    import yaml
+
+    from fleet.models import WorkstationConfig
+
+    shipped = _locate_workstation_config()
+    with open(shipped) as handle:
+        cfg = WorkstationConfig(**yaml.safe_load(handle))
+
+    # obs-svc must be declared in the roster as a non-essential repo.
+    obs_repo = next((r for r in cfg.repositories if r.name == "obs-svc"), None)
+    assert obs_repo is not None, "obs-svc missing from WorkstationConfig roster"
+    assert obs_repo.essential is False
+
+    # repoint every roster repo at a tmp dir so build_plan's compose-file filter
+    # sees a compose project regardless of what is checked out on this host. the
+    # network owner keeps a dev-fleet-defining file; everyone else consumes it.
+    owner_compose = (
+        "services:\n  traefik:\n    image: traefik\n"
+        "networks:\n  dev-fleet:\n    name: dev-fleet\n    driver: bridge\n"
+    )
+    dependent_compose = (
+        "services:\n  svc:\n    image: busybox\n"
+        "networks:\n  dev-fleet:\n    external: true\n"
+    )
+    repos = []
+    for r in cfg.repositories:
+        d = tmp_path / r.name
+        d.mkdir()
+        # fleet itself ships no compose target -- leave it empty so it is excluded
+        if r.name != "fleet":
+            body = owner_compose if r.name == "traefik" else dependent_compose
+            (d / "docker-compose.yml").write_text(body)
+        repos.append({"name": r.name, "origin": r.origin, "path": str(d), "essential": r.essential})
+
+    cfg_path = tmp_path / "WorkstationConfig.yaml"
+    cfg_path.write_text(WorkstationConfig(
+        version=cfg.version, host=cfg.host, repositories=repos, models=cfg.models
+    ).model_dump_json())
+
+    plan = _resolve_lifecycle_plan(str(cfg_path))
+    obs = next((u for u in plan.units if u.name == "obs-svc"), None)
+    assert obs is not None, "obs-svc fell out of the lifecycle plan"
+    assert obs.tier == TIER_WORKLOAD
+    down = [u.name for u in plan.down_order]
+    assert "obs-svc" in down
+    assert down.index("obs-svc") < down.index("traefik")
