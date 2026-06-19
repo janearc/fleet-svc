@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+#
+# pr-report wrapper: a thin, agent-friendly entrypoint to `fleet pr-report`.
+# JSON by default (the agent-first contract); --table for a human view. The
+# roster comes from WorkstationConfig.repositories, never a glob.
+#
+# Resolves the fleet checkout so the wrapper works from anywhere (e.g. symlinked
+# into ~/var/bin).
+set -euo pipefail
+
+FLEET_DIR="${FLEET_DIR:-$HOME/work/fleet}"
+
+if [ ! -d "$FLEET_DIR" ]; then
+  echo "pr-report: fleet checkout not found at $FLEET_DIR (set FLEET_DIR)" >&2
+  exit 1
+fi
+
+case "${1:-}" in
+  -h|--help)
+    cat <<'USAGE'
+Usage: pr-report [--table] [--config PATH]
+
+Survey open PRs across the WorkstationConfig roster and classify each:
+  needs-review          awaiting a reviewer
+  ready-to-land         approved and mergeable
+  stacked-approve-only  approved, but its base is an open PR that is not yet approved
+  blocked               draft, changes-requested, or waiting on an unapproved base PR
+
+  (default)   emit JSON
+  --table     render a human table
+  --config    path to WorkstationConfig.yaml
+USAGE
+    exit 0
+    ;;
+esac
+
+exec uv run --project "$FLEET_DIR" fleet pr-report "$@"
