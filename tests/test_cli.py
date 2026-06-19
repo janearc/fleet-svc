@@ -330,6 +330,29 @@ def test_start_runtime_invalid_env_reports_and_skips(mock_run, capsys, monkeypat
     mock_run.assert_not_called()
 
 
+@patch("fleet.model_svc.dispatch", return_value=0)
+def test_model_svc_dispatch_success(mock_dispatch, cli_runner):
+    result = cli_runner.invoke(main, ["model-svc", "paling-dev", "status"])
+    assert result.exit_code == 0
+    mock_dispatch.assert_called_once_with("paling-dev", "status", [])
+
+
+@patch("fleet.model_svc.dispatch", return_value=7)
+def test_model_svc_propagates_exit_code(mock_dispatch, cli_runner):
+    result = cli_runner.invoke(main, ["model-svc", "dev", "restart", "--force"])
+    assert result.exit_code == 7
+    mock_dispatch.assert_called_once_with("dev", "restart", ["--force"])
+
+
+@patch("fleet.model_svc.dispatch")
+def test_model_svc_not_installed_reports(mock_dispatch, cli_runner):
+    from fleet.model_svc import ModelSvcNotInstalled
+    mock_dispatch.side_effect = ModelSvcNotInstalled("model-svc not installed: ...")
+    result = cli_runner.invoke(main, ["model-svc", "dev", "status"])
+    assert result.exit_code == 1
+    assert "model-svc not installed" in result.output
+
+
 @patch("fleet.pr_report.build_report")
 def test_pr_report_json_default(mock_build, cli_runner):
     # json by default: the agent-first contract
