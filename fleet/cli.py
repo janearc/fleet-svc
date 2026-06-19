@@ -197,10 +197,23 @@ _COMPOSE_FILENAMES = ("docker-compose.yml", "docker-compose.yaml", "compose.yml"
 
 # Used only when WorkstationConfig cannot be read: a meteor may have taken the
 # config with everything else, and cold-boot recovery must not hard-depend on it.
+# Ordered network-owner-first to match the lifecycle model: traefik creates the
+# dev-fleet network and is the route registry, so it must come up before any
+# dependent. kafka-logging is the message backbone -- a cold boot that omits it
+# leaves every producer/consumer with nowhere to talk, so it belongs in the
+# minimal recoverable set (the prior fallback wrongly dropped it).
 _FALLBACK_TIER0 = (
     ("traefik", "~/work/traefik"),
+    ("kafka-logging", "~/work/kafka-logging"),
     ("delightd", "~/work/delightd"),
 )
+
+
+# raised by the bootstrap network-precedence guard when a dependent service would
+# be started before the dev-fleet network exists. surfaced as one actionable line
+# instead of letting the raw compose "network dev-fleet not found" leak out.
+class NetworkNotReady(Exception):
+    pass
 
 
 def _locate_workstation_config():
@@ -265,6 +278,33 @@ _AUTO_PREFERENCE = ("colima", "docker-desktop")
 # "auto" is a resolver directive, not a drivable runtime, so it is valid input
 # but absent from _DOCKER_RUNTIMES.
 _VALID_RUNTIMES = frozenset({"auto"}) | frozenset(_DOCKER_RUNTIMES)
+
+
+def _dev_fleet_network_exists():
+    # cheap, side-effect-free probe of the shared network. used by bootstrap to
+    # refuse to start a dependent before its network owner has created dev-fleet,
+    # turning the raw compose "network dev-fleet not found" into an actionable
+    # error. any docker failure is treated as "cannot confirm" -> absent.
+    from fleet.lifecycle import DEV_FLEET_NETWORK
+
+    try:
+        out = subprocess.check_output(
+            ["docker", "network", "ls", "--filter", f"name=^{DEV_FLEET_NETWORK}$", "--format", "{{.Name}}"],
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        return False
+    return DEV_FLEET_NETWORK in out.decode().split()
+
+
+def _resolve_lifecycle_plan(config_path=None):
+    # single source of the ordered fleet membership: load the roster and classify
+    # each compose-bearing repo into a tier. used by both bootstrap (forward) and
+    # down (reverse) so ordering is defined once.
+    from fleet.lifecycle import load_plan
+
+    config_path = config_path or _locate_workstation_config()
+    return load_plan(config_path)
 
 
 def _resolve_docker_runtime(config_path=None):
@@ -387,39 +427,43 @@ async def bootstrap(dry_run):
 
     click.echo("\n[Phase 2: Bootstrapping Tier 0 Services]")
 
-    def run_docker_service(cwd, name):
-        expanded_cwd = os.path.expanduser(cwd)
-        cmd = "docker compose up -d"
-        if dry_run:
-            click.echo(f" + [DRY RUN] Would start {name}")
-            click.echo(f"   > cd {cwd} && {cmd}")
-            return True
-
-        click.echo(f" + Starting {name} in {cwd}...")
-        if not os.path.exists(expanded_cwd):
-            click.echo(click.style(f"   ✗ Directory not found: {expanded_cwd}", fg="red"))
-            return False
-        try:
-            subprocess.run(cmd, cwd=expanded_cwd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            click.echo(click.style(f"   ✓ {name} initiated.", fg="green"))
-            return True
-        except Exception as e:
-            click.echo(click.style(f"   ✗ Failed to start {name}: {e}", fg="red"))
-            return False
-
+    # forward (up) order comes from the one lifecycle model: network owner first,
+    # then backbone, control plane, workloads. the same model drives `fleet down`
+    # in reverse, so ordering lives in exactly one place.
+    network_owner = None
     try:
-        tier0 = _essential_compose_repos()
-        if not tier0:
+        plan = _resolve_lifecycle_plan()
+        ordered = [(u.name, u.path) for u in plan.up_order]
+        network_owner = plan.network_owner
+        if not ordered:
             raise ValueError("no essential compose repositories resolved from WorkstationConfig")
     except Exception as exc:
         click.echo(click.style(f" ! Could not derive tier-0 from WorkstationConfig ({exc}); using fallback list.", fg="yellow"))
-        tier0 = list(_FALLBACK_TIER0)
+        ordered = list(_FALLBACK_TIER0)
 
-    for name, path in tier0:
-        run_docker_service(path, name)
+    # network precedence: bring up the owner first (it creates dev-fleet), then
+    # confirm the network exists before starting any dependent. if it is still
+    # absent we stop with one actionable line rather than letting every dependent
+    # fail with the raw compose "network dev-fleet not found".
+    owner_name = network_owner.name if network_owner is not None else (ordered[0][0] if ordered else None)
+
+    for name, path in ordered:
+        is_owner = (name == owner_name)
+        if not is_owner and not dry_run and not _dev_fleet_network_exists():
+            from fleet.lifecycle import DEV_FLEET_NETWORK
+            click.echo(click.style(
+                f"\n🚨 The shared '{DEV_FLEET_NETWORK}' network does not exist yet; cannot start {name}.",
+                fg="red", bold=True))
+            click.echo(click.style(
+                f"   The network owner ({owner_name}) must come up first to create it. "
+                f"Wait for {owner_name} to be ready, then re-run `fleet bootstrap`.",
+                fg="red"))
+            return
+        run_docker_service(path, name, dry_run)
 
     click.echo("\n" + "-" * 60)
-    click.echo(click.style("💡 Tier-0 is derived from essential repositories in WorkstationConfig.", fg="cyan"))
+    click.echo(click.style("💡 Start order is derived from the lifecycle model (network owner first).", fg="cyan"))
+    click.echo("   Membership comes from essential repositories in WorkstationConfig.")
     click.echo("   Edit that file to change what a cold boot brings up.")
     click.echo("-" * 60)
 
@@ -429,6 +473,140 @@ async def bootstrap(dry_run):
     else:
         click.echo(click.style("\n✅ Bootstrap complete. The routing layer will reconstruct automatically.", fg="green", bold=True))
         click.echo("Run `fleet show` to check the status once services are online.")
+
+def run_docker_service(cwd, name, dry_run):
+    # graceful, scoped START of one fleet repo's compose project via
+    # `docker compose up -d`. like the stop counterpart it only acts on the
+    # compose project rooted in `cwd`.
+    import os
+
+    expanded_cwd = os.path.expanduser(cwd)
+    cmd = "docker compose up -d"
+    if dry_run:
+        click.echo(f" + [DRY RUN] Would start {name}")
+        click.echo(f"   > cd {cwd} && {cmd}")
+        return True
+
+    click.echo(f" + Starting {name} in {cwd}...")
+    if not os.path.exists(expanded_cwd):
+        click.echo(click.style(f"   ✗ Directory not found: {expanded_cwd}", fg="red"))
+        return False
+    try:
+        subprocess.run(cmd, cwd=expanded_cwd, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        click.echo(click.style(f"   ✓ {name} initiated.", fg="green"))
+        return True
+    except Exception as e:
+        click.echo(click.style(f"   ✗ Failed to start {name}: {e}", fg="red"))
+        return False
+
+
+def _compose_stop_repo(name, path, dry_run):
+    # graceful, scoped stop of ONE fleet repo's compose project. `docker compose
+    # stop` acts only on the containers of the compose project rooted at `cwd`,
+    # so this never reaches the k3d cluster containers (k3d-fleet-*) or any
+    # container outside the fleet's own compose files -- the scoping is the
+    # compose project, not a flat `docker stop` of `docker ps -q`. idempotent:
+    # stopping an already-stopped project is a no-op that exits 0.
+    import os
+
+    expanded = os.path.expanduser(path)
+    cmd = "docker compose stop"
+    if dry_run:
+        click.echo(f" + [DRY RUN] Would stop {name}")
+        click.echo(f"   > cd {path} && {cmd}")
+        return True
+
+    click.echo(f" + Stopping {name} in {path}...")
+    if not os.path.exists(expanded):
+        # a missing repo dir is not an error for teardown: nothing to stop.
+        click.echo(click.style(f"   ⚠ Directory not found, nothing to stop: {expanded}", fg="yellow"))
+        return True
+    try:
+        subprocess.run(cmd, cwd=expanded, shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        click.echo(click.style(f"   ✓ {name} stopped.", fg="green"))
+        return True
+    except Exception as e:
+        click.echo(click.style(f"   ✗ Failed to stop {name}: {e}", fg="red"))
+        return False
+
+
+@main.command(help="graceful, dependency-ordered teardown of the fleet's own compose services")
+@click.option('--dry-run', is_flag=True, help='Print the teardown plan without acting')
+@click.option('--yes', '-y', is_flag=True, help='Skip confirmation')
+@click.option('--skip-sync', is_flag=True, help='Do not gate on a clean git tree (sync) first')
+def down(dry_run, yes, skip_sync):
+    # graceful, fleet-SCOPED teardown in REVERSE dependency order: workloads
+    # (obs-svc, paling) first, then control plane (delightd), then the message
+    # backbone, then the network owner (traefik) LAST -- it owns dev-fleet and
+    # the route registry, so nothing else can be talking by the time it goes.
+    #
+    # scoping: the set comes from the lifecycle plan (WorkstationConfig roster +
+    # compose files), and each repo is stopped with `docker compose stop` against
+    # its own project. it NEVER touches the k3d cluster containers or colima --
+    # those are not roster repos and `docker compose` cannot reach across projects.
+    #
+    # state model: `down` does NOT journal. the declared essential set in
+    # WorkstationConfig is the single source of truth; `fleet bootstrap`
+    # reconverges to it. (the pause/resume journal is a separate, selective lever
+    # and is left intact.) this is the simpler correct round-trip: down -> bootstrap
+    # returns to the declared set without replaying recorded per-service state.
+    title = "🛑 Graceful Fleet Teardown"
+    if dry_run:
+        title += " (DRY RUN)"
+    click.echo(click.style(title, bold=True, fg="cyan"))
+
+    # gate on a clean tree unless explicitly skipped or dry-running. we do not
+    # silently tear down a dirty workstation: uncommitted/unpushed state would be
+    # at risk. the operator can run `fleet sync` themselves, or pass --skip-sync.
+    if not dry_run and not skip_sync:
+        from fleet.git_state import DelightdUnavailable, fetch_git_state
+        try:
+            git_repos = fetch_git_state()
+            dirty = [r["name"] for r in git_repos if r.get("dirty") or r.get("unpushed", 0) > 0 or r.get("error")]
+            if dirty:
+                click.echo(click.style(
+                    f"\n🚨 Refusing to tear down: workstation has uncommitted/unpushed/unverifiable state ({', '.join(dirty)}).",
+                    fg="red", bold=True))
+                click.echo("   Run `fleet sync` and resolve it, or pass --skip-sync to override.")
+                sys.exit(1)
+        except DelightdUnavailable as exc:
+            click.echo(click.style(
+                f"\n🚨 Refusing to tear down: cannot verify git state, delightd unreachable ({exc}).",
+                fg="red", bold=True))
+            click.echo("   Start delightd and retry, or pass --skip-sync to override.")
+            sys.exit(1)
+
+    try:
+        plan = _resolve_lifecycle_plan()
+        ordered = plan.down_order
+        if not ordered:
+            raise ValueError("no compose repositories resolved from WorkstationConfig")
+    except Exception as exc:
+        click.echo(click.style(f" ✗ Could not derive the teardown plan from WorkstationConfig: {exc}", fg="red"))
+        click.echo("   Refusing a flat `docker stop` -- that is what emergency-stop is for.")
+        sys.exit(1)
+
+    click.echo("\n[Teardown order: workloads → control plane → backbone → network owner]")
+    for unit in ordered:
+        click.echo(f"   {unit.tier_label}: {unit.name}")
+
+    if not dry_run and not yes:
+        click.confirm("\nProceed with graceful teardown?", abort=True)
+
+    click.echo("")
+    for unit in ordered:
+        _compose_stop_repo(unit.name, unit.path, dry_run)
+
+    click.echo("\n" + "-" * 60)
+    click.echo(click.style("💡 k3d cluster containers and colima are deliberately untouched.", fg="cyan"))
+    click.echo("   `fleet bootstrap` reconverges to the declared essential set.")
+    click.echo("-" * 60)
+
+    if dry_run:
+        click.echo(click.style("\n✅ Dry run complete. No actions were taken.", fg="green", bold=True))
+    else:
+        click.echo(click.style("\n✅ Fleet stopped gracefully. Run `fleet bootstrap` to bring it back.", fg="green", bold=True))
+
 
 @main.command()
 def emergency_stop():
