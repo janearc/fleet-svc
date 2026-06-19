@@ -11,7 +11,7 @@ It provides both a Python CLI and an HTTP service that aggregate state from:
 - **Traefik**
 - **Envoy**
 
-Git state (branch / dirty / unpushed) for managed repositories is sourced live from delightd's `GET /git` endpoint, with a local-git fallback when the daemon is unreachable so `fleet sync` can still gate a teardown.
+Git state (branch / dirty / unpushed) for managed repositories is sourced live from delightd's `GET /git` endpoint. There is no local-git fallback. delightd is the sole source of truth: if it cannot answer, the git commands fail closed (`fleet sync` blocks the teardown rather than certifying state it could not verify; `fleet git status`/`push` degrade with a clear error). The corollary is an availability mandate on delightd — resilience lives in the daemon coming up under any condition, not in a consumer-side hedge.
 
 It uses a canonical essentiality model. By labelling services with `fleet.essential="true"`, you ensure `fleet pause` will gracefully bring down all other, non-essential workloads to conserve resources.
 
