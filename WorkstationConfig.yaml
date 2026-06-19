@@ -41,6 +41,15 @@ repositories:
     origin: "git@github.com:jane/paling.git"
     path: "~/work/paling"
     essential: false
+  # obs-svc is a non-essential workload (the proof/demo layer): it ships a
+  # compose project (obs-svc-agg) that attaches to dev-fleet. it must be in the
+  # roster so the lifecycle plan classifies it as a workload and `fleet down`
+  # tears it down. bootstrap, which converges only the essential set, leaves it
+  # stopped -- that is the intended round-trip.
+  - name: "obs-svc"
+    origin: "git@github.com:janearc/obs-svc.git"
+    path: "~/work/obs-svc"
+    essential: false
   - name: "kafka-logging"
     origin: "git@github.com:janearc/kafka-svc.git"
     path: "~/work/kafka-logging"

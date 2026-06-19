@@ -125,6 +125,37 @@ def test_down_order_is_reverse_of_up(tmp_path):
     assert plan.down_order[0].tier == TIER_WORKLOAD
 
 
+def test_down_includes_non_essential_compose_workload(tmp_path):
+    # regression: a non-essential roster repo that ships a compose file (here
+    # obs-svc, which consumes dev-fleet exactly like the real obs-svc-agg
+    # project) MUST land in the teardown plan as a workload. the live failure was
+    # that obs-svc was absent from the roster entirely, so build_plan never saw
+    # it and `down` orphaned its running container. with it in the roster, the
+    # workload tier captures it and it is torn down before the control plane and
+    # before the network owner.
+    plan = build_plan(_config(tmp_path))
+    obs = next(u for u in plan.units if u.name == "obs-svc")
+    assert obs.tier == TIER_WORKLOAD
+    assert obs.essential is False
+    down = [u.name for u in plan.down_order]
+    # the workload is stopped before the control plane and the network owner
+    assert down.index("obs-svc") < down.index("delightd")
+    assert down.index("obs-svc") < down.index("traefik")
+
+
+def test_down_stops_all_compose_workloads(tmp_path):
+    # the contract for `down`: every roster repo that ships a compose file and is
+    # not the network owner / backbone / control plane is a workload and is in
+    # the teardown set. neither non-essential workload (obs-svc, paling) may fall
+    # through into "no tier".
+    plan = build_plan(_config(tmp_path))
+    workloads = {u.name for u in plan.units if u.tier == TIER_WORKLOAD}
+    assert workloads == {"obs-svc", "paling"}
+    # both appear in the actual teardown order (not silently dropped)
+    down = {u.name for u in plan.down_order}
+    assert {"obs-svc", "paling"} <= down
+
+
 def test_classifier_name_fallback_when_no_structural_owner(tmp_path):
     # if NO compose file defines the network (degenerate roster), the named
     # network owner still classifies as tier-0 by role.
