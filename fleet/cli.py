@@ -461,6 +461,28 @@ def emergency_stop():
 
     click.echo(click.style("✅ HOST MEMORY PURGING INITIATED.", fg="green", bold=True))
 
+@main.command(
+    name='model-svc',
+    help="dispatch to the model-svc project's wrapper: fleet model-svc <deployment> <command> [args]",
+    context_settings={"ignore_unknown_options": True},
+)
+@click.argument('deployment')
+@click.argument('command')
+@click.argument('args', nargs=-1, type=click.UNPROCESSED)
+def model_svc(deployment, command, args):
+    # forward to model-svc's bash wrapper (the contract). model-svc is a sibling
+    # project subordinate to fleet; fleet does not reimplement it. propagate the
+    # wrapper's exit code; if it is not installed, fail with one clear message.
+    from fleet.model_svc import ModelSvcNotInstalled, dispatch
+
+    try:
+        code = dispatch(deployment, command, list(args))
+    except ModelSvcNotInstalled as exc:
+        click.echo(click.style(str(exc), fg="red"))
+        sys.exit(1)
+    sys.exit(code)
+
+
 from fleet.git_cli import git
 main.add_command(git)
 
