@@ -2,6 +2,7 @@ import json
 from rich.console import Console
 from rich.table import Table
 from fleet.models import FleetState, PauseResult, SourceHealth
+from fleet.pr_report import PRReport
 
 console = Console()
 
@@ -115,6 +116,53 @@ def render_pause_result(result: PauseResult):
         table.add_row(err["name"], "[red]Error[/red]", err["error"])
         
     console.print(table)
+
+
+_PR_CLASS_STYLE = {
+    "needs-review": "yellow",
+    "ready-to-land": "green",
+    "stacked-approve-only": "cyan",
+    "blocked": "red",
+}
+
+
+def render_pr_report(report: PRReport):
+    # human view of the pr survey. one table per repo; the classification column
+    # is colour-keyed and a blocked/stacked pr names the pr it waits on.
+    if not report.repos:
+        console.print("[dim]No GitHub roster repositories found.[/dim]")
+        return
+
+    for repo in report.repos:
+        title = f"{repo.name} ({repo.slug})"
+        table = Table(title=title)
+        table.add_column("PR", justify="right", style="bold")
+        table.add_column("Title")
+        table.add_column("Base")
+        table.add_column("Classification")
+        table.add_column("Waits On")
+
+        if repo.error:
+            console.print(f"[red]✗ {title}: {repo.error}[/red]")
+            continue
+
+        if not repo.open_prs:
+            console.print(f"[dim]{title}: no open PRs[/dim]")
+            continue
+
+        for pr in repo.open_prs:
+            style = _PR_CLASS_STYLE.get(pr.classification, "white")
+            classification = f"[{style}]{pr.classification}[/{style}]"
+            waits = f"#{pr.blocked_on}" if pr.blocked_on else "[dim]—[/dim]"
+            table.add_row(
+                f"#{pr.number}",
+                pr.title,
+                pr.base,
+                classification,
+                waits,
+            )
+
+        console.print(table)
 
 
 def render_selfcheck(sources: list[SourceHealth]):

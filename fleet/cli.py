@@ -461,6 +461,21 @@ def emergency_stop():
 
     click.echo(click.style("✅ HOST MEMORY PURGING INITIATED.", fg="green", bold=True))
 
+@main.command(name='pr-report', help="survey open PRs across the roster and classify each")
+@click.option('--table', 'as_table', is_flag=True, help='Render a human table instead of JSON')
+@click.option('--config', 'config_path', default=None, help='Path to WorkstationConfig.yaml')
+def pr_report(as_table, config_path):
+    # json by default per the agent-first mandate; --table is the human view.
+    from fleet.pr_report import build_report
+    from fleet.display import render_pr_report
+
+    report = build_report(config_path=config_path)
+    if as_table:
+        render_pr_report(report)
+        return
+    click.echo(report.model_dump_json(indent=2))
+
+
 from fleet.git_cli import git
 main.add_command(git)
 
