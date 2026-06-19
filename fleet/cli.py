@@ -176,9 +176,27 @@ def sync():
 
     dirty = [r["name"] for r in git_repos if r.get("dirty")]
     unpushed = [r["name"] for r in git_repos if r.get("unpushed", 0) > 0]
+    # a project whose path is gone on disk is delightd reporting a STALE roster
+    # entry, not a risk to data: there is no working tree to lose. it is reported
+    # by delightd as `missing_path: true` (alongside a git.error explaining why).
+    # downgrade it to a warning and do NOT let it block teardown by itself --
+    # everything ELSE that delightd could not verify still fails closed below.
+    missing_path = [r["name"] for r in git_repos if r.get("missing_path")]
     # an unreadable repo is unsafe: the teardown gate fails closed, never
-    # assuming "clean" for state it could not verify
-    errored = [r["name"] for r in git_repos if r.get("error")]
+    # assuming "clean" for state it could not verify. a missing_path project also
+    # carries git.error ("project path not found"), but that specific cause is
+    # benign, so it is excluded from the failing-closed set.
+    errored = [
+        r["name"]
+        for r in git_repos
+        if r.get("error") and not r.get("missing_path")
+    ]
+
+    for name in missing_path:
+        click.echo(click.style(
+            f"warning: project {name} path missing on disk -- stale config entry? "
+            "(not blocking teardown)",
+            fg="yellow"))
 
     if dirty or unpushed or errored:
         click.echo(click.style("\nblocked: workstation has uncommitted, unpushed, or unverifiable state", fg="red"))
@@ -594,13 +612,31 @@ def down(dry_run, yes, skip_sync):
         click.confirm("\nProceed with graceful teardown?", abort=True)
 
     click.echo("")
+    # a service that will not stop is NOT something to paper over: continue the
+    # teardown so the rest of the fleet still comes down, but record the failures
+    # and surface them as a hard, non-zero error at the end naming each service.
+    # a silent "stopped gracefully" over a container that is still running is the
+    # exact lie this guard exists to prevent.
+    failed: list[str] = []
     for unit in ordered:
-        _compose_stop_repo(unit.name, unit.path, dry_run)
+        if not _compose_stop_repo(unit.name, unit.path, dry_run):
+            failed.append(unit.name)
 
     click.echo("\n" + "-" * 60)
     click.echo(click.style("💡 k3d cluster containers and colima are deliberately untouched.", fg="cyan"))
     click.echo("   `fleet bootstrap` reconverges to the declared essential set.")
     click.echo("-" * 60)
+
+    if failed:
+        click.echo(click.style(
+            f"\n🚨 Teardown FAILED: could not stop {', '.join(failed)}. "
+            "These services are still running -- the fleet is NOT down.",
+            fg="red", bold=True))
+        click.echo(click.style(
+            "   Investigate the failed compose project(s) and re-run `fleet down`, "
+            "or pull `fleet emergency-stop` as a last resort.",
+            fg="red"))
+        sys.exit(1)
 
     if dry_run:
         click.echo(click.style("\n✅ Dry run complete. No actions were taken.", fg="green", bold=True))

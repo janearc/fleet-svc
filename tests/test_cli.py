@@ -6,6 +6,7 @@ from fleet.cli import (
     _essential_compose_repos,
     _resolve_docker_runtime,
     _start_docker_runtime,
+    _compose_stop_repo,
     _DOCKER_RUNTIME_ENV,
 )
 from fleet.models import FleetState, PauseResult, SourceHealth
@@ -160,6 +161,70 @@ def test_sync_fails_closed_when_delightd_down(mock_fetch, cli_runner):
     result = cli_runner.invoke(main, ["sync"])
     assert result.exit_code == 1
     assert "delightd unreachable" in result.output
+
+
+@patch("fleet.git_state.fetch_git_state")
+def test_sync_missing_path_does_not_block(mock_fetch, cli_runner):
+    # delightd marks a project whose path is gone on disk with missing_path: true
+    # (and a benign git.error). that is a stale roster entry, not data at risk, so
+    # sync warns and still certifies the workstation safe to tear down.
+    mock_fetch.return_value = [
+        {
+            "name": "ghost-repo",
+            "dirty": False,
+            "unpushed": 0,
+            "has_upstream": False,
+            "error": "project path not found",
+            "missing_path": True,
+        },
+    ]
+    result = cli_runner.invoke(main, ["sync"])
+    assert result.exit_code == 0
+    assert "ghost-repo" in result.output
+    assert "path missing" in result.output
+    assert "workstation is clean and safe to teardown" in result.output
+
+
+@patch("fleet.git_state.fetch_git_state")
+def test_sync_missing_path_mixed_with_clean_passes(mock_fetch, cli_runner):
+    # a missing_path project alongside a genuinely clean one must still pass: the
+    # missing one is downgraded to a warning, the clean one is unaffected.
+    mock_fetch.return_value = [
+        {"name": "good-repo", "dirty": False, "unpushed": 0, "has_upstream": True, "error": ""},
+        {
+            "name": "ghost-repo",
+            "dirty": False,
+            "unpushed": 0,
+            "has_upstream": False,
+            "error": "project path not found",
+            "missing_path": True,
+        },
+    ]
+    result = cli_runner.invoke(main, ["sync"])
+    assert result.exit_code == 0
+    assert "ghost-repo" in result.output
+    assert "workstation is clean and safe to teardown" in result.output
+
+
+@patch("fleet.git_state.fetch_git_state")
+def test_sync_dirty_still_blocks_with_missing_path(mock_fetch, cli_runner):
+    # downgrading missing_path must NOT weaken the gate: a genuinely dirty project
+    # alongside a missing_path one still blocks.
+    mock_fetch.return_value = [
+        {"name": "dirty-repo", "dirty": True, "unpushed": 0, "has_upstream": True, "error": ""},
+        {
+            "name": "ghost-repo",
+            "dirty": False,
+            "unpushed": 0,
+            "has_upstream": False,
+            "error": "project path not found",
+            "missing_path": True,
+        },
+    ]
+    result = cli_runner.invoke(main, ["sync"])
+    assert result.exit_code == 1
+    assert "blocked" in result.output
+    assert "dirty-repo" in result.output
 
 
 def test_essential_compose_repos_filters(tmp_path):
@@ -486,6 +551,66 @@ def test_down_gates_on_dirty_tree(mock_plan, mock_run, cli_runner):
     assert result.exit_code == 1
     assert "Refusing to tear down" in result.output
     mock_run.assert_not_called()
+
+
+@patch("fleet.cli._compose_stop_repo")
+@patch("fleet.cli._resolve_lifecycle_plan")
+def test_down_hard_errors_on_stop_failure(mock_plan, mock_stop, cli_runner):
+    # a `docker compose stop` that actually fails must make `down` exit non-zero
+    # with a clear error naming the service -- never a silent "stopped gracefully".
+    mock_plan.return_value = _full_plan()
+
+    def _stop(name, path, dry_run):
+        # the control-plane service refuses to stop; everything else succeeds.
+        return name != "delightd"
+
+    mock_stop.side_effect = _stop
+    result = cli_runner.invoke(main, ["down", "--yes", "--skip-sync"])
+    assert result.exit_code == 1, f"expected non-zero exit, got: {result.output}"
+    assert "Teardown FAILED" in result.output
+    assert "delightd" in result.output
+    assert "NOT down" in result.output
+    # the rest of the fleet was still attempted (we do not bail on first failure)
+    stopped = [c.args[0] for c in mock_stop.call_args_list]
+    assert set(stopped) == {u.name for u in _full_plan().units}
+
+
+@patch("fleet.cli.subprocess.run")
+@patch("fleet.cli.os.path.exists", return_value=True)
+def test_compose_stop_repo_returns_false_on_subprocess_failure(mock_exists, mock_run):
+    # the unit that down depends on: a non-zero `docker compose stop` (raised as
+    # CalledProcessError by check=True) is caught and reported as a failed stop
+    # (returns False), which is what makes `down` exit non-zero.
+    import subprocess as _sp
+    mock_run.side_effect = _sp.CalledProcessError(1, "docker compose stop")
+    ok = _compose_stop_repo("delightd", "~/work/delightd", dry_run=False)
+    assert ok is False
+
+
+@patch("fleet.cli.subprocess.run")
+@patch("fleet.cli.os.path.exists", return_value=True)
+def test_compose_stop_repo_returns_true_on_success(mock_exists, mock_run):
+    # a clean stop returns True (the happy path the success banner relies on).
+    ok = _compose_stop_repo("delightd", "~/work/delightd", dry_run=False)
+    assert ok is True
+    assert mock_run.call_args.args[0] == "docker compose stop"
+
+
+def test_compose_stop_repo_missing_dir_is_noop():
+    # a missing repo dir is not a teardown error: nothing to stop, returns True.
+    ok = _compose_stop_repo("ghost", "/nonexistent/path/xyz", dry_run=False)
+    assert ok is True
+
+
+@patch("fleet.cli._compose_stop_repo", return_value=True)
+@patch("fleet.cli._resolve_lifecycle_plan")
+def test_down_all_success_exits_zero(mock_plan, mock_stop, cli_runner):
+    # the happy path: every stop succeeds -> exit 0 and the graceful banner.
+    mock_plan.return_value = _full_plan()
+    result = cli_runner.invoke(main, ["down", "--yes", "--skip-sync"])
+    assert result.exit_code == 0, f"Failed with output: {result.output}"
+    assert "stopped gracefully" in result.output
+    assert "Teardown FAILED" not in result.output
 
 
 @patch("fleet.cli._dev_fleet_network_exists", return_value=False)
