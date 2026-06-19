@@ -351,3 +351,25 @@ def test_model_svc_not_installed_reports(mock_dispatch, cli_runner):
     result = cli_runner.invoke(main, ["model-svc", "dev", "status"])
     assert result.exit_code == 1
     assert "model-svc not installed" in result.output
+
+
+@patch("fleet.pr_report.build_report")
+def test_pr_report_json_default(mock_build, cli_runner):
+    # json by default: the agent-first contract
+    from fleet.pr_report import PRReport, RepoReport
+    mock_build.return_value = PRReport(
+        repos=[RepoReport(name="fleet", path="~/work/fleet", slug="janearc/fleet-svc")]
+    )
+    result = cli_runner.invoke(main, ["pr-report"])
+    assert result.exit_code == 0
+    assert '"slug": "janearc/fleet-svc"' in result.output
+
+
+@patch("fleet.display.render_pr_report")
+@patch("fleet.pr_report.build_report")
+def test_pr_report_table(mock_build, mock_render, cli_runner):
+    from fleet.pr_report import PRReport
+    mock_build.return_value = PRReport()
+    result = cli_runner.invoke(main, ["pr-report", "--table"])
+    assert result.exit_code == 0
+    mock_render.assert_called_once()

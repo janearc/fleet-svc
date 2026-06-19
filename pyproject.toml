@@ -23,6 +23,7 @@ dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
     "pytest-asyncio>=0.23",
+    "pytest-timeout>=2.3",
     "respx>=0.21",
 ]
 
@@ -39,5 +40,14 @@ dev = [
     "pytest>=9.1.0",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
+    "pytest-timeout>=2.3.1",
     "respx>=0.23.1",
 ]
+
+# a per-test wall-clock ceiling so a hung test fails fast instead of spinning the
+# host into swap-death (the OOM root cause in #3 was a never-EOF mock that looped
+# yaml.safe_load forever). 60s is far above any real unit test here; only a
+# genuine hang trips it. the thread method works without signals/marks.
+[tool.pytest.ini_options]
+timeout = 60
+timeout_method = "thread"
