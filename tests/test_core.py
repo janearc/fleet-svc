@@ -10,10 +10,10 @@ async def test_fleet_core_init():
          patch("fleet.core.TraefikSource"), \
          patch("fleet.core.EnvoySource"):
         core = FleetCore()
-        # 5 built-in sources (delightd, docker, kube, traefik, envoy) after the
-        # transparent sunset, plus the odysseus contrib source loaded from
-        # fleet.contrib.
-        assert len(core.sources) == 6
+        # 5 built-in sources (docker, kube, delightd, traefik, envoy) after the
+        # transparent sunset. no contrib sources remain (odysseus removed —
+        # it is third-party and out of scope).
+        assert len(core.sources) == 5
 
 @pytest.mark.asyncio
 async def test_fleet_core_models():

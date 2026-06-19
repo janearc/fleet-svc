@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fleet.models import ServiceRecord, SourceHealth
@@ -11,6 +13,42 @@ from fleet.sources.base import Source
 log = logging.getLogger(__name__)
 
 ESSENTIAL_LABEL = "fleet.essential"
+
+# colima's default per-profile docker socket on macos. docker.from_env() only
+# consults the DOCKER_HOST env var; it does NOT read the active docker CLI
+# context, so on a colima host with DOCKER_HOST unset it falls back to
+# /var/run/docker.sock (which colima does not provide) and the client comes up
+# dead. we resolve the endpoint ourselves: DOCKER_HOST -> active docker context
+# -> the colima default socket -> from_env().
+_COLIMA_DEFAULT_SOCK = Path.home() / ".colima" / "default" / "docker.sock"
+
+
+def _resolve_base_url() -> str | None:
+    # honour an explicit DOCKER_HOST first — the operator's override wins.
+    host = os.environ.get("DOCKER_HOST")
+    if host:
+        return host
+
+    # otherwise follow the active docker CLI context (e.g. colima), matching
+    # what `docker` on the command line would talk to.
+    try:
+        from docker.context import ContextAPI
+
+        ctx = ContextAPI.get_current_context()
+        endpoint = ctx.endpoints.get("docker", {}) if ctx else {}
+        host = endpoint.get("Host")
+        if host:
+            return host
+    except Exception as exc:
+        # the docker lib may be absent or the context store unreadable; fall
+        # through to the colima default below.
+        log.debug("could not resolve docker context: %s", exc)
+
+    # last resort before from_env(): the colima default socket, if present.
+    if _COLIMA_DEFAULT_SOCK.exists():
+        return f"unix://{_COLIMA_DEFAULT_SOCK}"
+
+    return None
 
 # docker container status -> fleet normalized status
 _STATUS_MAP: dict[str, str] = {
@@ -101,8 +139,18 @@ class DockerSource(Source):
         else:
             try:
                 import docker
-                self._client = docker.from_env()
-            except Exception:
+
+                base_url = _resolve_base_url()
+                if base_url:
+                    self._client = docker.DockerClient(base_url=base_url)
+                else:
+                    # no DOCKER_HOST, no context, no colima socket: let the lib
+                    # try its own defaults rather than guessing.
+                    self._client = docker.from_env()
+            except Exception as exc:
+                # graceful degradation: a missing socket / unavailable daemon
+                # must not crash fleet — the source simply reports unreachable.
+                log.warning("could not init docker client: %s", exc)
                 self._client = None
 
     async def collect(self) -> list[ServiceRecord]:

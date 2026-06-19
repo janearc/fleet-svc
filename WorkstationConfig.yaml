@@ -37,10 +37,6 @@ repositories:
     origin: "git@github.com:jane/delightd.git"
     path: "~/work/delightd"
     essential: true
-  - name: "odysseus"
-    origin: "git@github.com:jane/odysseus.git"
-    path: "~/work/odysseus"
-    essential: false
   - name: "paling"
     origin: "git@github.com:jane/paling.git"
     path: "~/work/paling"
