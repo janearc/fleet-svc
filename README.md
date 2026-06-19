@@ -67,3 +67,11 @@ We enforce a strict 80% test coverage floor. Ensure tests pass before pushing:
 ```bash
 uv run pytest tests/ --cov=fleet
 ```
+
+---
+
+## author
+
+max toegang <max.toegang@ftml.net>
+🤖 claude · claude-opus-4-8
+🤖 bespoke locally trained models
