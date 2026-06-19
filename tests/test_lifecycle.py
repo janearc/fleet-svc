@@ -24,6 +24,26 @@ _DEPENDENT_COMPOSE = (
     "services:\n  svc:\n    image: busybox\n"
     f"networks:\n  {DEV_FLEET_NETWORK}:\n    external: true\n"
 )
+# a backbone repo that SELF-DECLARES its tier via the fleet.tier label (mapping
+# form) rather than relying on its name. the service is deliberately named
+# something the fallback list would not match.
+_BACKBONE_LABELLED_COMPOSE = (
+    "services:\n"
+    "  bus:\n"
+    "    image: redpanda\n"
+    "    labels:\n"
+    "      fleet.tier: backbone\n"
+    f"networks:\n  {DEV_FLEET_NETWORK}:\n    external: true\n"
+)
+# same declaration, list form (- KEY=VALUE), which compose also accepts.
+_BACKBONE_LABELLED_LIST_COMPOSE = (
+    "services:\n"
+    "  bus:\n"
+    "    image: redpanda\n"
+    "    labels:\n"
+    '      - "fleet.tier=backbone"\n'
+    f"networks:\n  {DEV_FLEET_NETWORK}:\n    external: true\n"
+)
 
 
 def _repo(tmp_path, name, compose_body):
@@ -177,6 +197,66 @@ def test_compose_with_unrelated_network_is_workload(tmp_path):
     )
     plan = build_plan(cfg)
     assert plan.units[0].tier == TIER_WORKLOAD
+
+
+def test_backbone_discovered_from_compose_label(tmp_path):
+    # PRIMARY path: a repo NOT on the name fallback list is classified as
+    # backbone purely because its compose declares fleet.tier: backbone.
+    bus = _repo(tmp_path, "redpanda-svc", _BACKBONE_LABELLED_COMPOSE)
+    cfg = WorkstationConfig(
+        version="1.0",
+        host={"os": "darwin", "arch": "arm64", "daemons": ["docker"]},
+        repositories=[{**bus, "essential": True}],
+    )
+    unit = build_plan(cfg).units[0]
+    assert unit.tier == TIER_BACKBONE
+    assert unit.tier_label == "backbone"
+
+
+def test_backbone_label_list_form(tmp_path):
+    # compose accepts labels as a list of KEY=VALUE strings as well as a mapping;
+    # both must be recognised.
+    bus = _repo(tmp_path, "redpanda-svc", _BACKBONE_LABELLED_LIST_COMPOSE)
+    cfg = WorkstationConfig(
+        version="1.0",
+        host={"os": "darwin", "arch": "arm64", "daemons": ["docker"]},
+        repositories=[{**bus, "essential": True}],
+    )
+    assert build_plan(cfg).units[0].tier == TIER_BACKBONE
+
+
+def test_backbone_name_fallback_warns_when_label_absent(tmp_path, caplog):
+    # FALLBACK path: a repo on the name list but WITHOUT the label still
+    # classifies as backbone (so ordering survives rollout), and the fallback is
+    # logged so the missing label is visible.
+    kafka = _repo(tmp_path, "kafka-logging", _DEPENDENT_COMPOSE)
+    cfg = WorkstationConfig(
+        version="1.0",
+        host={"os": "darwin", "arch": "arm64", "daemons": ["docker"]},
+        repositories=[{**kafka, "essential": True}],
+    )
+    with caplog.at_level("WARNING"):
+        unit = build_plan(cfg).units[0]
+    assert unit.tier == TIER_BACKBONE
+    assert any(
+        "backbone by name fallback" in rec.message for rec in caplog.records
+    )
+
+
+def test_backbone_label_does_not_warn(tmp_path, caplog):
+    # the label path must NOT emit the fallback warning -- the whole point is
+    # that discovery is silent and only the gap is noisy.
+    bus = _repo(tmp_path, "redpanda-svc", _BACKBONE_LABELLED_COMPOSE)
+    cfg = WorkstationConfig(
+        version="1.0",
+        host={"os": "darwin", "arch": "arm64", "daemons": ["docker"]},
+        repositories=[{**bus, "essential": True}],
+    )
+    with caplog.at_level("WARNING"):
+        build_plan(cfg)
+    assert not any(
+        "name fallback" in rec.message for rec in caplog.records
+    )
 
 
 def test_delightd_name_classifies_as_control_plane(tmp_path):

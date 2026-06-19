@@ -25,6 +25,15 @@ _COMPOSE_FILENAMES = (
 # last thing torn down.
 DEV_FLEET_NETWORK = "dev-fleet"
 
+# the compose label a service sets to declare its lifecycle tier. backbone
+# services (the message bus) carry `fleet.tier: backbone`. this is the PRIMARY
+# signal for backbone membership: a repo announces its own role in its compose
+# file, the same way the network owner announces itself structurally (by
+# DEFINING dev-fleet). the control plane discovers membership; it does not carry
+# a hardcoded list of which repos are backbone.
+FLEET_TIER_LABEL = "fleet.tier"
+FLEET_TIER_BACKBONE_VALUE = "backbone"
+
 # tier ordinals. forward (bootstrap/up) order is ascending; down order is the
 # exact reverse. the ordering lives HERE, in one place, and both directions
 # consume it -- nothing hardcodes a service name into an ordering decision.
@@ -48,11 +57,13 @@ _TIER_LABELS = {
     TIER_WORKLOAD: "workload",
 }
 
-# repos fleet recognises by role. membership is DISCOVERED, not hardcoded into
-# the ordering: we read the roster and the compose files to decide which repo
-# owns the network and which carries the message backbone. these names are the
-# only place a role is associated with a repo name, and they are overridable by
-# what the compose files actually declare (see _classify_repo).
+# repos fleet recognises by role. membership is DISCOVERED first -- the network
+# owner structurally (it DEFINES dev-fleet) and the backbone by a self-declared
+# `fleet.tier: backbone` compose label. these name lists are a DEFENSIVE
+# FALLBACK only: they keep ordering correct on a roster repo that has not yet
+# adopted the label (e.g. during rollout). a fallback hit is logged so the gap
+# is visible. control-plane has no structural/label signal yet, so it still
+# resolves by name.
 _NETWORK_OWNER_REPOS = ("traefik",)
 _BACKBONE_REPOS = ("kafka-logging", "kafka-svc")
 _CONTROL_PLANE_REPOS = ("delightd",)
@@ -111,20 +122,25 @@ def _compose_path(expanded_repo_path: str) -> str | None:
     return None
 
 
-def _defines_dev_fleet_network(compose_path: str) -> bool:
-    # the network owner is the repo whose compose file DEFINES dev-fleet rather
-    # than consuming it as external. we detect that structurally: a top-level
-    # networks: entry for dev-fleet that is not marked `external: true`. parsing
-    # with yaml keeps this honest if the repo set ever changes.
+def _load_compose(compose_path: str) -> dict | None:
+    # parse a compose file once; both the network-owner and backbone-tier
+    # discovery read from the result. a parse failure is logged and treated as
+    # "no structural signal" (the caller degrades to role-by-name).
     import yaml
 
     try:
         with open(compose_path) as handle:
-            doc = yaml.safe_load(handle) or {}
+            return yaml.safe_load(handle) or {}
     except Exception as exc:
         log.warning("could not parse compose file %s: %s", compose_path, exc)
-        return False
+        return None
 
+
+def _defines_dev_fleet_network(doc: dict) -> bool:
+    # the network owner is the repo whose compose file DEFINES dev-fleet rather
+    # than consuming it as external. we detect that structurally: a top-level
+    # networks: entry for dev-fleet that is not marked `external: true`. parsing
+    # with yaml keeps this honest if the repo set ever changes.
     networks = doc.get("networks") or {}
     for key, spec in networks.items():
         spec = spec or {}
@@ -139,13 +155,71 @@ def _defines_dev_fleet_network(compose_path: str) -> bool:
     return False
 
 
+def _service_labels(service: dict) -> dict[str, str]:
+    # compose accepts labels in two shapes: a mapping ({fleet.tier: backbone})
+    # or a list of KEY=VALUE strings (- "fleet.tier=backbone"). normalise both
+    # to a dict so callers can look a label up uniformly.
+    labels = (service or {}).get("labels")
+    if isinstance(labels, dict):
+        return {str(k): str(v) for k, v in labels.items()}
+    if isinstance(labels, list):
+        out: dict[str, str] = {}
+        for item in labels:
+            text = str(item)
+            key, sep, value = text.partition("=")
+            out[key.strip()] = value.strip() if sep else ""
+        return out
+    return {}
+
+
+def _declares_backbone_tier(doc: dict) -> bool:
+    # the backbone tier is self-declared: any service in this compose file
+    # carrying `fleet.tier: backbone` marks the repo as backbone. this is the
+    # PRIMARY signal -- a repo announces its own role rather than fleet matching
+    # it by name.
+    services = doc.get("services") or {}
+    for spec in services.values():
+        if _service_labels(spec).get(FLEET_TIER_LABEL) == FLEET_TIER_BACKBONE_VALUE:
+            return True
+    return False
+
+
 def _classify_repo(name: str, expanded_path: str, compose_path: str) -> int:
-    # decide a repo's tier. structural signal (does this compose file CREATE the
-    # shared network?) wins over name matching for the network-owner role, so the
-    # registry is identified by what it does, not what it is called. backbone and
-    # control-plane fall back to the known role names; everything else is workload.
-    if _defines_dev_fleet_network(compose_path):
+    # decide a repo's tier. discovery beats name matching:
+    #   - network owner: structural -- does this compose file CREATE the shared
+    #     network? the registry is identified by what it does, not its name.
+    #   - backbone: self-declared via the `fleet.tier: backbone` compose label.
+    # the name lists are a defensive fallback for repos that have not adopted the
+    # label/structure yet; a fallback hit is logged so the gap stays visible.
+    # everything unrecognised is a workload.
+    doc = _load_compose(compose_path)
+    if doc is None:
+        # unparseable compose: no structural/label signal. fall back to name.
+        return _classify_repo_by_name(name)
+
+    if _defines_dev_fleet_network(doc):
         return TIER_NETWORK_OWNER
+    if _declares_backbone_tier(doc):
+        return TIER_BACKBONE
+
+    fallback = _classify_repo_by_name(name)
+    if fallback == TIER_BACKBONE:
+        # the repo classifies as backbone only because its name is on the
+        # fallback list -- it has not declared `fleet.tier: backbone` yet.
+        log.warning(
+            "repo %s classified as backbone by name fallback; it does not "
+            "declare the %s: %s compose label",
+            name,
+            FLEET_TIER_LABEL,
+            FLEET_TIER_BACKBONE_VALUE,
+        )
+    return fallback
+
+
+def _classify_repo_by_name(name: str) -> int:
+    # defensive role-by-name fallback. used when the compose file carries no
+    # structural/label signal (or does not parse). overridden by discovery in
+    # _classify_repo whenever a signal is present.
     if name in _NETWORK_OWNER_REPOS:
         return TIER_NETWORK_OWNER
     if name in _BACKBONE_REPOS:
