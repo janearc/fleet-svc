@@ -41,6 +41,12 @@ repositories:
     origin: "git@github.com:jane/paling.git"
     path: "~/work/paling"
     essential: false
+    # the bare-metal eel: `paling serve` needs Metal/MLX and cannot be a pod, so
+    # `fleet deploy paling` rolls it through its launchd agent (install reloads
+    # the plist onto current code).
+    deploy:
+      kind: launchd
+      command: ["uv", "run", "paling", "launchagent", "install"]
   # obs-svc is a non-essential workload (the proof/demo layer): it ships a
   # compose project (obs-svc-agg) that attaches to dev-fleet. it must be in the
   # roster so the lifecycle plan classifies it as a workload and `fleet down`
@@ -50,6 +56,10 @@ repositories:
     origin: "git@github.com:janearc/obs-svc.git"
     path: "~/work/obs-svc"
     essential: false
+    # containerised: `fleet deploy obs-svc` rollout-restarts its Deployment.
+    deploy:
+      kind: kube
+      deployment: obs-svc-agg
   - name: "kafka-logging"
     origin: "git@github.com:janearc/kafka-svc.git"
     path: "~/work/kafka-logging"

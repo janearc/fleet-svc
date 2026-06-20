@@ -83,11 +83,27 @@ class WorkstationHost(BaseModel):
     packages: list[str] = Field(default_factory=list)
     casks: list[str] = Field(default_factory=list)
 
+class DeployConfig(BaseModel):
+    # how `fleet deploy <project>` rolls this project. kube: rollout-restart a
+    # Deployment in the cluster; launchd: (re)load a launchd-managed command --
+    # the bare-metal "eel" that cannot be a pod (e.g. `paling serve` on Metal/MLX).
+    kind: Literal["kube", "launchd"]
+    # kube: the Deployment to roll (defaults to the project name) and its namespace.
+    deployment: str | None = None
+    namespace: str = "fleet"
+    # launchd: the command that (re)installs/reloads the agent, run from the
+    # project's path so it uses the project's own venv/wrapper.
+    command: list[str] | None = None
+
+
 class WorkstationRepo(BaseModel):
     name: str
     origin: str
     path: str
     essential: bool = False
+    # optional: how `fleet deploy <name>` rolls this project. absent = not
+    # deployable through fleet (yet).
+    deploy: DeployConfig | None = None
 
 class WorkstationModel(BaseModel):
     provider: str
