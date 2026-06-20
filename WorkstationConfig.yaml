@@ -54,6 +54,14 @@ repositories:
     origin: "git@github.com:janearc/kafka-svc.git"
     path: "~/work/kafka-logging"
     essential: true
+  # taco is a CLI tool (resilient transfers for a bad link), not a running
+  # service: it ships no compose project, so it is not a workload the lifecycle
+  # plan starts or tears down. it is in the roster so fleet sync / git-state /
+  # backups cover its source. essential:false -- on-demand, never auto-converged.
+  - name: "taco"
+    origin: "git@github.com:janearc/taco.git"
+    path: "~/work/taco"
+    essential: false
 
 models:
   - provider: "huggingface"
