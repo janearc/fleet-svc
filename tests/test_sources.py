@@ -5,16 +5,20 @@ from fleet.sources.traefik import TraefikSource
 
 @pytest.mark.asyncio
 async def test_delightd_source_healthy(respx_mock):
-    respx_mock.get("http://localhost:8080/health").respond(json={"status": "ok"})
+    # _resolve_host first probes Traefik's routers; an empty list means no delightd
+    # route is published, so it falls back to the direct control port 127.0.0.1:8088.
+    respx_mock.get("http://127.0.0.1:8080/api/http/routers").respond(json=[])
+    respx_mock.get("http://127.0.0.1:8088/health").respond(json={"status": "ok"})
     source = DelightdSource()
     health = await source.healthy()
     assert health.reachable is True
 
 @pytest.mark.asyncio
 async def test_delightd_source_collect(respx_mock):
-    respx_mock.get("http://localhost:8080/health").respond(json={"active_projects": 1})
-    respx_mock.get("http://localhost:8080/projects/default/state").respond(json={"state": "monitoring"})
-    
+    respx_mock.get("http://127.0.0.1:8080/api/http/routers").respond(json=[])
+    respx_mock.get("http://127.0.0.1:8088/health").respond(json={"active_projects": 1})
+    respx_mock.get("http://127.0.0.1:8088/projects/default/state").respond(json={"state": "monitoring"})
+
     source = DelightdSource(project_names=["default"])
     services = await source.collect()
     assert len(services) == 1
@@ -23,17 +27,18 @@ async def test_delightd_source_collect(respx_mock):
 
 @pytest.mark.asyncio
 async def test_traefik_source_healthy(respx_mock):
-    respx_mock.get("http://localhost:8081/api/overview").respond(json={})
+    # TraefikSource defaults to the Traefik API on :8080 (its well-known port).
+    respx_mock.get("http://localhost:8080/api/overview").respond(json={})
     source = TraefikSource()
     health = await source.healthy()
     assert health.reachable is True
 
 @pytest.mark.asyncio
 async def test_traefik_source_collect(respx_mock):
-    respx_mock.get("http://localhost:8081/api/http/routers").respond(json=[
+    respx_mock.get("http://localhost:8080/api/http/routers").respond(json=[
         {"name": "web@docker", "status": "enabled", "rule": "Host(`test.local`)", "service": "web"}
     ])
-    respx_mock.get("http://localhost:8081/api/http/services").respond(json=[
+    respx_mock.get("http://localhost:8080/api/http/services").respond(json=[
         {"name": "web", "loadBalancer": {"servers": [{"url": "http://10.0.0.1:80"}]}}
     ])
     
