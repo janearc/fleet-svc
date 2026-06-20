@@ -712,6 +712,33 @@ def pr_report(as_table, config_path):
     click.echo(report.model_dump_json(indent=2))
 
 
+@main.command(help="roll one fleet project, delightd-gated (udeploy-style): fleet deploy <project>")
+@click.argument('project')
+@click.option('--dry-run', is_flag=True, help='Show the roll plan without acting')
+@click.option('--json', 'as_json', is_flag=True, help='Output as JSON (agent-first)')
+@click.option('--config', 'config_path', default=None, help='Path to WorkstationConfig.yaml')
+def deploy(project, dry_run, as_json, config_path):
+    # fleet does not roll blind: deploy() asks delightd (the SOT) whether the
+    # project is known + healthy and fails closed if it cannot answer, then rolls
+    # it the way WorkstationConfig declares (kube rollout / launchd reload).
+    from fleet.deploy import DeployError
+    from fleet.deploy import deploy as run_deploy
+
+    try:
+        result = run_deploy(project, config_path=config_path, dry_run=dry_run)
+    except DeployError as exc:
+        click.echo(click.style(f"deploy refused: {exc}", fg="red"))
+        sys.exit(1)
+
+    if as_json:
+        click.echo(result.model_dump_json(indent=2))
+        return
+    for warning in result.warnings:
+        click.echo(click.style(f"  ⚠ {warning}", fg="yellow"))
+    verb = "would roll" if result.dry_run else "rolled"
+    click.echo(click.style(f"✓ {verb} {result.project} via {result.kind}: {result.detail}", fg="green"))
+
+
 from fleet.git_cli import git
 main.add_command(git)
 
