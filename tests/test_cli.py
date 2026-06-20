@@ -208,8 +208,8 @@ def test_sync_missing_path_mixed_with_clean_passes(mock_fetch, cli_runner):
 
 @patch("fleet.git_state.fetch_git_state")
 def test_sync_dirty_still_blocks_with_missing_path(mock_fetch, cli_runner):
-    # downgrading missing_path must NOT weaken the gate: a genuinely dirty project
-    # alongside a missing_path one still blocks.
+    # downgrading missing_path must NOT weaken the gate: a project with real
+    # uncommitted changes alongside a missing_path one still blocks.
     mock_fetch.return_value = [
         {"name": "dirty-repo", "dirty": True, "unpushed": 0, "has_upstream": True, "error": ""},
         {
@@ -567,9 +567,9 @@ def test_down_hard_errors_on_stop_failure(mock_plan, mock_stop, cli_runner):
     mock_stop.side_effect = _stop
     result = cli_runner.invoke(main, ["down", "--yes", "--skip-sync"])
     assert result.exit_code == 1, f"expected non-zero exit, got: {result.output}"
-    assert "Teardown FAILED" in result.output
+    assert "Teardown incomplete" in result.output
     assert "delightd" in result.output
-    assert "NOT down" in result.output
+    assert "not fully down" in result.output
     # the rest of the fleet was still attempted (we do not bail on first failure)
     stopped = [c.args[0] for c in mock_stop.call_args_list]
     assert set(stopped) == {u.name for u in _full_plan().units}
@@ -610,7 +610,7 @@ def test_down_all_success_exits_zero(mock_plan, mock_stop, cli_runner):
     result = cli_runner.invoke(main, ["down", "--yes", "--skip-sync"])
     assert result.exit_code == 0, f"Failed with output: {result.output}"
     assert "stopped gracefully" in result.output
-    assert "Teardown FAILED" not in result.output
+    assert "Teardown incomplete" not in result.output
 
 
 @patch("fleet.cli._dev_fleet_network_exists", return_value=False)
