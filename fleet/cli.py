@@ -623,14 +623,14 @@ def down(dry_run, yes, skip_sync):
             failed.append(unit.name)
 
     click.echo("\n" + "-" * 60)
-    click.echo(click.style("💡 k3d cluster containers and colima are deliberately untouched.", fg="cyan"))
+    click.echo(click.style("k3d cluster containers and colima are deliberately untouched.", fg="cyan"))
     click.echo("   `fleet bootstrap` reconverges to the declared essential set.")
     click.echo("-" * 60)
 
     if failed:
         click.echo(click.style(
-            f"\n🚨 Teardown FAILED: could not stop {', '.join(failed)}. "
-            "These services are still running -- the fleet is NOT down.",
+            f"\nTeardown incomplete: could not stop {', '.join(failed)}. "
+            "These services are still running; the fleet is not fully down.",
             fg="red", bold=True))
         click.echo(click.style(
             "   Investigate the failed compose project(s) and re-run `fleet down`, "
@@ -639,9 +639,9 @@ def down(dry_run, yes, skip_sync):
         sys.exit(1)
 
     if dry_run:
-        click.echo(click.style("\n✅ Dry run complete. No actions were taken.", fg="green", bold=True))
+        click.echo(click.style("\nDry run complete. No actions were taken.", fg="green", bold=True))
     else:
-        click.echo(click.style("\n✅ Fleet stopped gracefully. Run `fleet bootstrap` to bring it back.", fg="green", bold=True))
+        click.echo(click.style("\nFleet stopped gracefully. Run `fleet bootstrap` to bring it back.", fg="green", bold=True))
 
 
 @main.command()
