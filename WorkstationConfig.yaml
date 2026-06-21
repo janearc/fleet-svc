@@ -26,19 +26,19 @@ host:
 
 repositories:
   - name: "fleet"
-    origin: "git@github.com:jane/fleet.git"
+    origin: "git@github.com:janearc/fleet-svc.git"
     path: "~/work/fleet"
     essential: true
   - name: "traefik"
-    origin: "git@github.com:jane/traefik.git"
+    origin: "git@github.com:janearc/traefik-svc.git"
     path: "~/work/traefik"
     essential: true
   - name: "delightd"
-    origin: "git@github.com:jane/delightd.git"
+    origin: "git@github.com:janearc/delightd.git"
     path: "~/work/delightd"
     essential: true
   - name: "paling"
-    origin: "git@github.com:jane/paling.git"
+    origin: "git@github.com:janearc/paling.git"
     path: "~/work/paling"
     essential: false
     # the bare-metal eel: `paling serve` needs Metal/MLX and cannot be a pod, so
